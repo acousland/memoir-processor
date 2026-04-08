@@ -1,0 +1,101 @@
+name: MemoirProcessor
+options:
+  minimumXcodeGenVersion: 2.45.0
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 15.0
+targets:
+  MemoirProcessorCore:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: Sources/MemoirProcessorCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.core
+        DEFINES_MODULE: YES
+        CODE_SIGNING_ALLOWED: NO
+        OTHER_LDFLAGS:
+          - -lsqlite3
+
+  MemoirProcessorAgent:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/MemoirProcessorAgent
+    resources:
+      - path: worker
+        type: folder
+      - path: proxy
+        type: folder
+    dependencies:
+      - target: MemoirProcessorCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.agent
+        CODE_SIGNING_ALLOWED: NO
+        OTHER_LDFLAGS:
+          - -lsqlite3
+        INFOPLIST_FILE: ""
+
+  MemoirProcessorApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: Sources/MemoirProcessorApp
+    resources:
+      - path: worker
+        type: folder
+      - path: proxy
+        type: folder
+    dependencies:
+      - target: MemoirProcessorCore
+      - target: MemoirProcessorAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.app
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        PRODUCT_NAME: Memoir Processor
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+    postBuildScripts:
+      - name: Bundle Agent
+        script: |
+          set -euo pipefail
+          APP_DIR="${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}"
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+          cp "${BUILT_PRODUCTS_DIR}/MemoirProcessorAgent" "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
+          chmod +x "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
+          rm -rf "${APP_DIR}/Contents/Resources/worker"
+          cp -R "${PROJECT_DIR}/worker" "${APP_DIR}/Contents/Resources/worker"
+          rm -rf "${APP_DIR}/Contents/Resources/proxy"
+          cp -R "${PROJECT_DIR}/proxy" "${APP_DIR}/Contents/Resources/proxy"
+
+  MemoirProcessorCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/MemoirProcessorCoreTests
+    dependencies:
+      - target: MemoirProcessorCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.core.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  MemoirProcessorApp:
+    build:
+      targets:
+        MemoirProcessorApp: all
+        MemoirProcessorAgent: all
+  MemoirProcessorAgent:
+    build:
+      targets:
+        MemoirProcessorAgent: all

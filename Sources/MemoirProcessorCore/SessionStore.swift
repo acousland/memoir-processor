@@ -1,0 +1,570 @@
+import Foundation
+import Darwin
+
+public final class SessionStore: @unchecked Sendable {
+    private let config: AppConfig
+    private let fileManager = FileManager.default
+    private let database: SQLiteDatabase
+
+    public init(config: AppConfig) throws {
+        self.config = config
+        let root = ProcessorPaths.root(for: config)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: ProcessorPaths.sessionsDirectory(for: config), withIntermediateDirectories: true)
+        database = try SQLiteDatabase(path: ProcessorPaths.databaseURL(for: config).path)
+        try migrate()
+    }
+
+    private func migrate() throws {
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                session_name TEXT NOT NULL,
+                recording_started_at TEXT NOT NULL,
+                recording_ended_at TEXT NOT NULL,
+                recorder_device_id TEXT NOT NULL,
+                recorder_app_version TEXT NOT NULL,
+                recorder_build TEXT NOT NULL,
+                metadata_expected INTEGER NOT NULL,
+                system_expected INTEGER NOT NULL,
+                mic_expected INTEGER NOT NULL,
+                metadata_received INTEGER NOT NULL DEFAULT 0,
+                system_received INTEGER NOT NULL DEFAULT 0,
+                mic_received INTEGER NOT NULL DEFAULT 0,
+                metadata_size INTEGER,
+                system_size INTEGER,
+                mic_size INTEGER,
+                metadata_sha256 TEXT,
+                system_sha256 TEXT,
+                mic_sha256 TEXT,
+                ingestion_state TEXT NOT NULL,
+                processing_state TEXT,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                error_message TEXT,
+                retryable INTEGER NOT NULL DEFAULT 0,
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                worker_pid INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                create_request_hash TEXT NOT NULL
+            );
+        """)
+        try database.execute("ALTER TABLE sessions ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;", allowFailure: true)
+        try database.execute("ALTER TABLE sessions ADD COLUMN worker_pid INTEGER;", allowFailure: true)
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS idempotency_records (
+                endpoint TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(endpoint, idempotency_key)
+            );
+        """)
+    }
+
+    public func listSessions() throws -> [SessionListItem] {
+        try database.fetchAll("""
+            SELECT session_id, session_name, ingestion_state, processing_state, attempt, created_at, updated_at, error_message
+            FROM sessions
+            ORDER BY created_at DESC
+        """).map { row in
+            SessionListItem(
+                id: row["session_id"]?.stringValue ?? "",
+                sessionName: row["session_name"]?.stringValue ?? "",
+                ingestionState: IngestionState(rawValue: row["ingestion_state"]?.stringValue ?? "") ?? .created,
+                processingState: row["processing_state"]?.stringValue.flatMap(ProcessingState.init(rawValue:)),
+                attempt: row["attempt"]?.intValue ?? 0,
+                createdAt: row["created_at"]?.stringValue ?? "",
+                updatedAt: row["updated_at"]?.stringValue ?? "",
+                errorMessage: row["error_message"]?.stringValue
+            )
+        }
+    }
+
+    public func fetchStatus(sessionID: String) throws -> SessionStatusResponse {
+        guard let row = try database.fetchOne("SELECT * FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
+            throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
+        }
+
+        return SessionStatusResponse(
+            sessionID: sessionID,
+            sessionName: row["session_name"]?.stringValue ?? "",
+            ingestionState: IngestionState(rawValue: row["ingestion_state"]?.stringValue ?? "") ?? .created,
+            processingState: row["processing_state"]?.stringValue.flatMap(ProcessingState.init(rawValue:)),
+            createdAt: row["created_at"]?.stringValue ?? "",
+            updatedAt: row["updated_at"]?.stringValue ?? "",
+            expectedFiles: ExpectedFiles(
+                metadata: row["metadata_expected"]?.boolValue ?? true,
+                system: row["system_expected"]?.boolValue ?? true,
+                mic: row["mic_expected"]?.boolValue ?? false
+            ),
+            receivedFiles: ReceivedFiles(
+                metadata: row["metadata_received"]?.boolValue ?? false,
+                system: row["system_received"]?.boolValue ?? false,
+                mic: row["mic_received"]?.boolValue ?? false
+            ),
+            error: row["error_code"]?.stringValue.map {
+                ProcessorError(code: $0, message: row["error_message"]?.stringValue ?? "Unknown error", retryable: row["retryable"]?.boolValue ?? false)
+            }
+        )
+    }
+
+    public func createSession(_ request: CreateSessionRequest, idempotencyKey: String, baseURL: String) throws -> (CreateSessionResponse, Int) {
+        let requestHash = try jsonHash(request)
+        if let existing = try idempotentResponse(for: .create, key: idempotencyKey, requestHash: requestHash, type: CreateSessionResponse.self) {
+            return (existing, 200)
+        }
+
+        if let row = try database.fetchOne("SELECT create_request_hash FROM sessions WHERE session_id = ?", bindings: [.text(request.sessionID)]) {
+            guard row["create_request_hash"]?.stringValue == requestHash else {
+                throw ProcessorError(code: "session_conflict", message: "Session already exists with different payload.", retryable: false)
+            }
+
+            let response = buildCreateResponse(sessionID: request.sessionID, baseURL: baseURL)
+            try saveIdempotency(endpoint: .create, key: idempotencyKey, requestHash: requestHash, response: response)
+            return (response, 200)
+        }
+
+        let now = Time.nowString()
+        try createSessionDirectories(sessionID: request.sessionID)
+        try database.execute("""
+            INSERT INTO sessions (
+                session_id, session_name, recording_started_at, recording_ended_at,
+                recorder_device_id, recorder_app_version, recorder_build,
+                metadata_expected, system_expected, mic_expected,
+                ingestion_state, processing_state, attempt,
+                created_at, updated_at, create_request_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, bindings: [
+            .text(request.sessionID),
+            .text(request.sessionName),
+            .text(request.recordingStartedAt),
+            .text(request.recordingEndedAt),
+            .text(request.recorder.deviceID),
+            .text(request.recorder.appVersion),
+            .text(request.recorder.build),
+            .integer(request.expectedFiles.metadata ? 1 : 0),
+            .integer(request.expectedFiles.system ? 1 : 0),
+            .integer(request.expectedFiles.mic ? 1 : 0),
+            .text(IngestionState.created.rawValue),
+            .null,
+            .integer(0),
+            .text(now),
+            .text(now),
+            .text(requestHash)
+        ])
+
+        let response = buildCreateResponse(sessionID: request.sessionID, baseURL: baseURL)
+        try saveIdempotency(endpoint: .create, key: idempotencyKey, requestHash: requestHash, response: response)
+        try writeJobArtifact(sessionID: request.sessionID)
+        return (response, 201)
+    }
+
+    public func saveUpload(sessionID: String, kind: UploadFileKind, body: Data, headerChecksum: String) throws -> FileUploadResponse {
+        guard let row = try database.fetchOne("SELECT * FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
+            throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
+        }
+
+        let expected = switch kind {
+        case .metadata: row["metadata_expected"]?.boolValue ?? true
+        case .system: row["system_expected"]?.boolValue ?? true
+        case .mic: row["mic_expected"]?.boolValue ?? false
+        }
+        guard expected else {
+            throw ProcessorError(code: "unexpected_file", message: "Upload is not expected for this session.", retryable: false)
+        }
+
+        let actualChecksum = Hashing.sha256Hex(for: body)
+        guard actualChecksum == headerChecksum else {
+            throw ProcessorError(code: "checksum_mismatch", message: "Uploaded file hash does not match X-Content-SHA256 header.", retryable: false)
+        }
+
+        let size = body.count
+        let existingHashColumn = "\(kind.rawValue)_sha256"
+        if let existingHash = row[existingHashColumn]?.stringValue, !existingHash.isEmpty, existingHash != actualChecksum {
+            throw ProcessorError(code: "file_conflict", message: "File slot already contains different bytes.", retryable: false)
+        }
+
+        let targetURL: URL = kind == .metadata ? ProcessorPaths.metadataURL(for: config, sessionID: sessionID) : ProcessorPaths.audioURL(for: config, sessionID: sessionID, kind: kind)
+        try body.write(to: targetURL, options: .atomic)
+        let receivedColumn = "\(kind.rawValue)_received"
+        let sizeColumn = "\(kind.rawValue)_size"
+        let hashColumn = "\(kind.rawValue)_sha256"
+        let now = Time.nowString()
+        try database.execute("""
+            UPDATE sessions
+            SET \(receivedColumn) = 1,
+                \(sizeColumn) = ?,
+                \(hashColumn) = ?,
+                ingestion_state = ?,
+                updated_at = ?,
+                error_code = NULL,
+                error_message = NULL,
+                retryable = 0
+            WHERE session_id = ?
+        """, bindings: [
+            .integer(Int64(size)),
+            .text(actualChecksum),
+            .text(IngestionState.uploading.rawValue),
+            .text(now),
+            .text(sessionID)
+        ])
+
+        try appendLog(sessionID: sessionID, line: "Accepted \(kind.rawValue) upload (\(size) bytes).")
+        try writeJobArtifact(sessionID: sessionID)
+        return FileUploadResponse(sessionID: sessionID, file: kind.rawValue, sizeBytes: size, sha256: actualChecksum, accepted: true)
+    }
+
+    public func completeSession(sessionID: String, request: CompleteSessionRequest, idempotencyKey: String) throws -> (CompleteSessionResponse, Int) {
+        let requestHash = try jsonHash(request)
+        if let existing = try idempotentResponse(for: .complete, key: idempotencyKey, requestHash: requestHash, type: CompleteSessionResponse.self) {
+            return (existing, 200)
+        }
+
+        let status = try fetchStatus(sessionID: sessionID)
+        guard status.receivedFiles.metadata, status.receivedFiles.system else {
+            throw ProcessorError(code: "missing_required_file", message: "Required uploads are missing.", retryable: false)
+        }
+        if status.expectedFiles.mic && !status.receivedFiles.mic {
+            throw ProcessorError(code: "missing_required_file", message: "mic.wav was declared but not uploaded.", retryable: false)
+        }
+
+        try verifyUploadDescriptor(sessionID: sessionID, kind: .metadata, descriptor: request.uploadedFiles["metadata"])
+        try verifyUploadDescriptor(sessionID: sessionID, kind: .system, descriptor: request.uploadedFiles["system"])
+        if status.expectedFiles.mic {
+            try verifyUploadDescriptor(sessionID: sessionID, kind: .mic, descriptor: request.uploadedFiles["mic"])
+        }
+
+        let acceptedAt = Time.nowString()
+        try database.execute("""
+            UPDATE sessions
+            SET ingestion_state = ?,
+                processing_state = ?,
+                updated_at = ?,
+                error_code = NULL,
+                error_message = NULL,
+                retryable = 0
+            WHERE session_id = ?
+        """, bindings: [
+            .text(IngestionState.readyForProcessing.rawValue),
+            .text(ProcessingState.queued.rawValue),
+            .text(acceptedAt),
+            .text(sessionID)
+        ])
+
+        let response = CompleteSessionResponse(
+            sessionID: sessionID,
+            ingestionState: .readyForProcessing,
+            processingState: .queued,
+            acceptedAt: acceptedAt
+        )
+        try saveIdempotency(endpoint: .complete, key: idempotencyKey, requestHash: requestHash, response: response)
+        try appendLog(sessionID: sessionID, line: "Session marked complete and queued.")
+        try writeJobArtifact(sessionID: sessionID)
+        return (response, 200)
+    }
+
+    public func nextRunnableSession() throws -> String? {
+        try database.fetchOne("""
+            SELECT session_id
+            FROM sessions
+            WHERE processing_state IN (?, ?)
+            ORDER BY updated_at ASC
+            LIMIT 1
+        """, bindings: [.text(ProcessingState.queued.rawValue), .text(ProcessingState.retryPending.rawValue)])?["session_id"]?.stringValue
+    }
+
+    public func markRetryPending(sessionID: String, error: ProcessorError) throws {
+        guard let row = try database.fetchOne("SELECT attempt FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else { return }
+        let attempt = row["attempt"]?.intValue ?? 0
+        let nextAttempt = attempt + 1
+        let nextState: ProcessingState = nextAttempt < config.maxRetries ? .retryPending : .failed
+        try setProcessingState(sessionID: sessionID, state: nextState, attempt: nextAttempt, error: error)
+    }
+
+    public func setProcessingState(sessionID: String, state: ProcessingState, attempt: Int? = nil, error: ProcessorError? = nil) throws {
+        let currentAttempt: Int
+        if let attempt {
+            currentAttempt = attempt
+        } else {
+            currentAttempt = try database.fetchOne("SELECT attempt FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)])?["attempt"]?.intValue ?? 0
+        }
+        let now = Time.nowString()
+        try database.execute("""
+            UPDATE sessions
+            SET processing_state = ?,
+                attempt = ?,
+                updated_at = ?,
+                error_code = ?,
+                error_message = ?,
+                retryable = ?,
+                stop_requested = 0,
+                worker_pid = NULL
+            WHERE session_id = ?
+        """, bindings: [
+            .text(state.rawValue),
+            .integer(Int64(currentAttempt)),
+            .text(now),
+            error.map { .text($0.code) } ?? .null,
+            error.map { .text($0.message) } ?? .null,
+            .integer((error?.retryable ?? false) ? 1 : 0),
+            .text(sessionID)
+        ])
+        try writeJobArtifact(sessionID: sessionID)
+    }
+
+    public func retrySession(sessionID: String) throws {
+        try setProcessingState(sessionID: sessionID, state: .retryPending, error: nil)
+        try appendLog(sessionID: sessionID, line: "Manual retry requested.")
+    }
+
+    public func requestStopSession(sessionID: String) throws {
+        guard let row = try database.fetchOne("SELECT processing_state, worker_pid FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
+            throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
+        }
+
+        let processingState = row["processing_state"]?.stringValue.flatMap(ProcessingState.init(rawValue:))
+        let workerPID = row["worker_pid"]?.intValue
+        try database.execute("""
+            UPDATE sessions
+            SET stop_requested = 1,
+                updated_at = ?
+            WHERE session_id = ?
+        """, bindings: [.text(Time.nowString()), .text(sessionID)])
+
+        if let workerPID, workerPID > 0 {
+            _ = kill(Int32(workerPID), SIGTERM)
+        }
+
+        if processingState == .queued || processingState == .retryPending {
+            try markStopped(sessionID: sessionID)
+        } else {
+            try appendLog(sessionID: sessionID, line: "Stop requested.")
+            try writeJobArtifact(sessionID: sessionID)
+        }
+    }
+
+    public func removeSession(sessionID: String) throws {
+        guard try database.fetchOne("SELECT session_id FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) != nil else {
+            throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
+        }
+
+        try? requestStopSession(sessionID: sessionID)
+        try database.execute("DELETE FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)])
+        let sessionDirectory = ProcessorPaths.sessionDirectory(for: config, sessionID: sessionID)
+        if fileManager.fileExists(atPath: sessionDirectory.path) {
+            try fileManager.removeItem(at: sessionDirectory)
+        }
+    }
+
+    public func recoverIncompleteSessions() throws {
+        let rows = try database.fetchAll("""
+            SELECT session_id, processing_state
+            FROM sessions
+            WHERE processing_state IN (?, ?, ?)
+        """, bindings: [
+            .text(ProcessingState.validating.rawValue),
+            .text(ProcessingState.transcribing.rawValue),
+            .text(ProcessingState.writingArtifacts.rawValue)
+        ])
+
+        for row in rows {
+            guard let sessionID = row["session_id"]?.stringValue else { continue }
+            try setProcessingState(
+                sessionID: sessionID,
+                state: .retryPending,
+                error: ProcessorError(code: "recovered_after_restart", message: "Session moved back to retry queue after restart.", retryable: true)
+            )
+        }
+    }
+
+    public func metadataFile(for sessionID: String) throws -> MetadataFile {
+        let url = ProcessorPaths.metadataURL(for: config, sessionID: sessionID)
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder.memoir.decode(MetadataFile.self, from: data)
+    }
+
+    public func appendLog(sessionID: String, line: String) throws {
+        let logURL = ProcessorPaths.logsURL(for: config, sessionID: sessionID)
+        let entry = "[\(Time.nowString())] \(line)\n"
+        if fileManager.fileExists(atPath: logURL.path) {
+            let handle = try FileHandle(forWritingTo: logURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            handle.write(Data(entry.utf8))
+        } else {
+            try entry.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    public func writeTranscriptArtifacts(sessionID: String, transcript: CanonicalTranscript) throws {
+        let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
+        try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
+
+        let transcriptURL = processingDirectory.appendingPathComponent("transcript.json")
+        try JSONEncoder.memoir.encode(transcript).write(to: transcriptURL, options: .atomic)
+
+        let plainText = transcript.segments.map { segment in
+            let prefix = segment.speaker.map { "[\($0)] " } ?? ""
+            return "\(prefix)\(segment.text)"
+        }.joined(separator: "\n")
+        try plainText.write(to: processingDirectory.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
+
+        let srt = transcript.segments.enumerated().map { index, segment in
+            "\(index + 1)\n\(Self.srtTimestamp(segment.start)) --> \(Self.srtTimestamp(segment.end))\n\(segment.text)\n"
+        }.joined(separator: "\n")
+        try srt.write(to: processingDirectory.appendingPathComponent("transcript.srt"), atomically: true, encoding: .utf8)
+    }
+
+    public func artifactPath(sessionID: String, name: String) -> URL {
+        ProcessorPaths.processingDirectory(for: config, sessionID: sessionID).appendingPathComponent(name)
+    }
+
+    public func setWorkerPID(sessionID: String, pid: Int32?) throws {
+        try database.execute("""
+            UPDATE sessions
+            SET worker_pid = ?,
+                updated_at = ?
+            WHERE session_id = ?
+        """, bindings: [
+            pid.map { .integer(Int64($0)) } ?? .null,
+            .text(Time.nowString()),
+            .text(sessionID)
+        ])
+    }
+
+    public func isStopRequested(sessionID: String) throws -> Bool {
+        guard let row = try database.fetchOne("SELECT stop_requested FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
+            return true
+        }
+        return row["stop_requested"]?.boolValue ?? false
+    }
+
+    public func markStopped(sessionID: String) throws {
+        try database.execute("""
+            UPDATE sessions
+            SET processing_state = ?,
+                error_code = ?,
+                error_message = ?,
+                retryable = 0,
+                stop_requested = 0,
+                worker_pid = NULL,
+                updated_at = ?
+            WHERE session_id = ?
+        """, bindings: [
+            .text(ProcessingState.failed.rawValue),
+            .text("session_stopped"),
+            .text("Processing was stopped by the operator."),
+            .text(Time.nowString()),
+            .text(sessionID)
+        ])
+        try appendLog(sessionID: sessionID, line: "Processing stopped.")
+        try writeJobArtifact(sessionID: sessionID)
+    }
+
+    public func configValue() -> AppConfig {
+        config
+    }
+
+    private func buildCreateResponse(sessionID: String, baseURL: String) -> CreateSessionResponse {
+        let path = baseURL.isEmpty
+            ? "/v1/sessions/\(sessionID)/files"
+            : "\(baseURL)/v1/sessions/\(sessionID)/files"
+        return CreateSessionResponse(
+            sessionID: sessionID,
+            ingestionState: .created,
+            uploadURLs: [
+                "metadata": "\(path)/metadata",
+                "system": "\(path)/system",
+                "mic": "\(path)/mic"
+            ]
+        )
+    }
+
+    private func verifyUploadDescriptor(sessionID: String, kind: UploadFileKind, descriptor: UploadedFileDescriptor?) throws {
+        guard let descriptor else {
+            throw ProcessorError(code: "missing_required_file", message: "Missing \(kind.rawValue) upload descriptor.", retryable: false)
+        }
+
+        guard let row = try database.fetchOne("SELECT \(kind.rawValue)_size AS size, \(kind.rawValue)_sha256 AS sha256 FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
+            throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
+        }
+
+        guard row["size"]?.intValue == descriptor.sizeBytes, row["sha256"]?.stringValue == descriptor.sha256 else {
+            throw ProcessorError(code: "checksum_mismatch", message: "Uploaded file metadata does not match stored file.", retryable: false)
+        }
+    }
+
+    private func createSessionDirectories(sessionID: String) throws {
+        try fileManager.createDirectory(at: ProcessorPaths.sessionDirectory(for: config, sessionID: sessionID), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: ProcessorPaths.processingDirectory(for: config, sessionID: sessionID), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: ProcessorPaths.workDirectory(for: config, sessionID: sessionID), withIntermediateDirectories: true)
+    }
+
+    private func saveIdempotency<T: Encodable>(endpoint: APIRequestContext, key: String, requestHash: String, response: T) throws {
+        let json = String(data: try JSONEncoder.memoir.encode(response), encoding: .utf8) ?? "{}"
+        try database.execute("""
+            INSERT OR REPLACE INTO idempotency_records (endpoint, idempotency_key, request_hash, response_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, bindings: [
+            .text(endpoint.rawValue),
+            .text(key),
+            .text(requestHash),
+            .text(json),
+            .text(Time.nowString())
+        ])
+    }
+
+    private func idempotentResponse<T: Decodable>(for endpoint: APIRequestContext, key: String, requestHash: String, type: T.Type) throws -> T? {
+        guard let row = try database.fetchOne("""
+            SELECT request_hash, response_json
+            FROM idempotency_records
+            WHERE endpoint = ? AND idempotency_key = ?
+        """, bindings: [.text(endpoint.rawValue), .text(key)]) else {
+            return nil
+        }
+
+        guard row["request_hash"]?.stringValue == requestHash else {
+            throw ProcessorError(code: "invalid_request", message: "Idempotency key was reused with a different payload.", retryable: false)
+        }
+
+        guard let json = row["response_json"]?.stringValue?.data(using: .utf8) else {
+            throw ProcessorError(code: "internal_error", message: "Stored idempotency response is invalid.", retryable: false)
+        }
+        return try JSONDecoder.memoir.decode(T.self, from: json)
+    }
+
+    private func jsonHash<T: Encodable>(_ value: T) throws -> String {
+        Hashing.sha256Hex(for: try JSONEncoder.memoir.encode(value))
+    }
+
+    private func writeJobArtifact(sessionID: String) throws {
+        guard let row = try database.fetchOne("SELECT * FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else { return }
+        let job = JobArtifact(
+            jobID: sessionID,
+            sessionID: sessionID,
+            status: row["processing_state"]?.stringValue ?? row["ingestion_state"]?.stringValue ?? IngestionState.created.rawValue,
+            attempt: row["attempt"]?.intValue ?? 0,
+            createdAt: row["created_at"]?.stringValue ?? Time.nowString(),
+            updatedAt: row["updated_at"]?.stringValue ?? Time.nowString(),
+            engine: config.transcriptionEngine,
+            model: config.modelName,
+            error: row["error_code"]?.stringValue.map {
+                ProcessorError(code: $0, message: row["error_message"]?.stringValue ?? "Unknown error", retryable: row["retryable"]?.boolValue ?? false)
+            }
+        )
+        let url = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID).appendingPathComponent("job.json")
+        try JSONEncoder.memoir.encode(job).write(to: url, options: .atomic)
+    }
+
+    private static func srtTimestamp(_ seconds: Double) -> String {
+        let totalMilliseconds = Int((seconds * 1000.0).rounded())
+        let hours = totalMilliseconds / 3_600_000
+        let minutes = (totalMilliseconds % 3_600_000) / 60_000
+        let secs = (totalMilliseconds % 60_000) / 1000
+        let millis = totalMilliseconds % 1000
+        return String(format: "%02d:%02d:%02d,%03d", hours, minutes, secs, millis)
+    }
+}
