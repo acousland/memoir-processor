@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
+import io
 import json
+import os
 import sys
 
 
@@ -32,13 +35,19 @@ def main() -> int:
         return 1
 
     try:
+        ffmpeg_binary = os.environ.get("FFMPEG_BINARY")
+        if ffmpeg_binary:
+            os.environ["PATH"] = os.path.dirname(ffmpeg_binary) + os.pathsep + os.environ.get("PATH", "")
+
         model = whisper.load_model(args.model)
-        result = model.transcribe(
-            args.audio,
-            language=args.language,
-            word_timestamps=False,
-            verbose=False,
-        )
+        captured_stdout = io.StringIO()
+        with contextlib.redirect_stdout(captured_stdout):
+            result = model.transcribe(
+                args.audio,
+                language=args.language,
+                word_timestamps=False,
+                verbose=False,
+            )
     except Exception as exc:
         print(f"Whisper transcription failed: {exc}", file=sys.stderr)
         return 1
@@ -63,4 +72,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

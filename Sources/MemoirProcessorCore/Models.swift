@@ -229,6 +229,7 @@ public struct SessionStatusResponse: Codable, Sendable {
     public let expectedFiles: ExpectedFiles
     public let receivedFiles: ReceivedFiles
     public let error: ProcessorError?
+    public let warnings: [SessionWarning]
 
     public init(
         sessionID: String,
@@ -239,7 +240,8 @@ public struct SessionStatusResponse: Codable, Sendable {
         updatedAt: String,
         expectedFiles: ExpectedFiles,
         receivedFiles: ReceivedFiles,
-        error: ProcessorError?
+        error: ProcessorError?,
+        warnings: [SessionWarning] = []
     ) {
         self.sessionID = sessionID
         self.sessionName = sessionName
@@ -250,6 +252,7 @@ public struct SessionStatusResponse: Codable, Sendable {
         self.expectedFiles = expectedFiles
         self.receivedFiles = receivedFiles
         self.error = error
+        self.warnings = warnings
     }
 
     enum CodingKeys: String, CodingKey {
@@ -262,6 +265,7 @@ public struct SessionStatusResponse: Codable, Sendable {
         case expectedFiles = "expected_files"
         case receivedFiles = "received_files"
         case error
+        case warnings
     }
 }
 
@@ -274,6 +278,8 @@ public struct AppConfig: Codable, Sendable {
     public let modelName: String
     public let maxRetries: Int
     public let diarizationEnabled: Bool
+    public let speakerAutoMatchThreshold: Double
+    public let allowCPUFallbackForDiarization: Bool
     public let outputFormats: [String]
     public let storageRoot: String
     public let languageHint: String?
@@ -287,6 +293,8 @@ public struct AppConfig: Codable, Sendable {
         modelName: String,
         maxRetries: Int,
         diarizationEnabled: Bool,
+        speakerAutoMatchThreshold: Double,
+        allowCPUFallbackForDiarization: Bool,
         outputFormats: [String],
         storageRoot: String,
         languageHint: String?
@@ -299,6 +307,8 @@ public struct AppConfig: Codable, Sendable {
         self.modelName = modelName
         self.maxRetries = maxRetries
         self.diarizationEnabled = diarizationEnabled
+        self.speakerAutoMatchThreshold = speakerAutoMatchThreshold
+        self.allowCPUFallbackForDiarization = allowCPUFallbackForDiarization
         self.outputFormats = outputFormats
         self.storageRoot = storageRoot
         self.languageHint = languageHint
@@ -312,10 +322,12 @@ public struct AppConfig: Codable, Sendable {
             port: 8765,
             tlsEnabled: true,
             authToken: UUID().uuidString.replacingOccurrences(of: "-", with: ""),
-            transcriptionEngine: "whisper",
+            transcriptionEngine: "whisperkit",
             modelName: "base",
             maxRetries: 3,
             diarizationEnabled: false,
+            speakerAutoMatchThreshold: 0.86,
+            allowCPUFallbackForDiarization: true,
             outputFormats: ["json", "txt", "srt"],
             storageRoot: root,
             languageHint: nil
@@ -331,6 +343,8 @@ public struct AppConfig: Codable, Sendable {
         case modelName
         case maxRetries
         case diarizationEnabled
+        case speakerAutoMatchThreshold
+        case allowCPUFallbackForDiarization
         case outputFormats
         case storageRoot
         case languageHint
@@ -346,6 +360,8 @@ public struct AppConfig: Codable, Sendable {
         modelName = try container.decode(String.self, forKey: .modelName)
         maxRetries = try container.decode(Int.self, forKey: .maxRetries)
         diarizationEnabled = try container.decode(Bool.self, forKey: .diarizationEnabled)
+        speakerAutoMatchThreshold = try container.decodeIfPresent(Double.self, forKey: .speakerAutoMatchThreshold) ?? 0.86
+        allowCPUFallbackForDiarization = try container.decodeIfPresent(Bool.self, forKey: .allowCPUFallbackForDiarization) ?? true
         outputFormats = try container.decode([String].self, forKey: .outputFormats)
         storageRoot = try container.decode(String.self, forKey: .storageRoot)
         languageHint = try container.decodeIfPresent(String.self, forKey: .languageHint)
@@ -360,6 +376,8 @@ public struct AppConfig: Codable, Sendable {
         modelName: String? = nil,
         maxRetries: Int? = nil,
         diarizationEnabled: Bool? = nil,
+        speakerAutoMatchThreshold: Double? = nil,
+        allowCPUFallbackForDiarization: Bool? = nil,
         outputFormats: [String]? = nil,
         storageRoot: String? = nil,
         languageHint: String?? = nil
@@ -373,6 +391,8 @@ public struct AppConfig: Codable, Sendable {
             modelName: modelName ?? self.modelName,
             maxRetries: maxRetries ?? self.maxRetries,
             diarizationEnabled: diarizationEnabled ?? self.diarizationEnabled,
+            speakerAutoMatchThreshold: speakerAutoMatchThreshold ?? self.speakerAutoMatchThreshold,
+            allowCPUFallbackForDiarization: allowCPUFallbackForDiarization ?? self.allowCPUFallbackForDiarization,
             outputFormats: outputFormats ?? self.outputFormats,
             storageRoot: storageRoot ?? self.storageRoot,
             languageHint: languageHint ?? self.languageHint
@@ -394,6 +414,60 @@ public struct AudioMetadata: Codable, Sendable {
     }
 }
 
+public struct EchoCancellationMetadata: Codable, Sendable {
+    public let applied: Bool
+    public let mode: String
+}
+
+public struct StreamTimingMetadata: Codable, Sendable {
+    public let firstSampleHostTimeNS: String
+    public let startOffsetSeconds: Double
+    public let sampleRateHz: Int
+    public let durationFrames: Int
+    public let latencyFrames: Int
+
+    enum CodingKeys: String, CodingKey {
+        case firstSampleHostTimeNS = "first_sample_host_time_ns"
+        case startOffsetSeconds = "start_offset_seconds"
+        case sampleRateHz = "sample_rate_hz"
+        case durationFrames = "duration_frames"
+        case latencyFrames = "latency_frames"
+    }
+}
+
+public struct StreamSyncStreamsMetadata: Codable, Sendable {
+    public let system: StreamTimingMetadata?
+    public let mic: StreamTimingMetadata?
+}
+
+public struct StreamSyncMetadata: Codable, Sendable {
+    public let schemaVersion: Int
+    public let timeline: String
+    public let sessionZeroHostTimeNS: String
+    public let referenceStream: String
+    public let alignedWavExport: Bool
+    public let driftCorrected: Bool
+    public let estimatedDriftPPM: Double
+    public let relativeOffsetToSystemSeconds: Double?
+    public let syncConfidence: String
+    public let echoCancellation: EchoCancellationMetadata
+    public let streams: StreamSyncStreamsMetadata
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case timeline
+        case sessionZeroHostTimeNS = "session_zero_host_time_ns"
+        case referenceStream = "reference_stream"
+        case alignedWavExport = "aligned_wav_export"
+        case driftCorrected = "drift_corrected"
+        case estimatedDriftPPM = "estimated_drift_ppm"
+        case relativeOffsetToSystemSeconds = "relative_offset_to_system_seconds"
+        case syncConfidence = "sync_confidence"
+        case echoCancellation = "echo_cancellation"
+        case streams
+    }
+}
+
 public struct MetadataFile: Codable, Sendable {
     public let sessionID: String
     public let sessionName: String
@@ -404,6 +478,7 @@ public struct MetadataFile: Codable, Sendable {
     public let micAudio: AudioMetadata?
     public let languageHint: String?
     public let notes: String?
+    public let streamSync: StreamSyncMetadata?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
@@ -415,7 +490,16 @@ public struct MetadataFile: Codable, Sendable {
         case micAudio = "mic_audio"
         case languageHint = "language_hint"
         case notes
+        case streamSync = "stream_sync"
     }
+}
+
+public enum SpeakerSource: String, Codable, CaseIterable, Sendable {
+    case system
+    case mic
+    case diarization
+    case manual
+    case unknown
 }
 
 public struct TranscriptSegment: Codable, Sendable, Identifiable {
@@ -423,14 +507,119 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
     public let start: Double
     public let end: Double
     public let speaker: String?
+    public let speakerID: String?
+    public let speakerSource: SpeakerSource?
+    public let speakerConfidence: Double?
     public let text: String
 
-    public init(id: UUID = UUID(), start: Double, end: Double, speaker: String?, text: String) {
+    public init(
+        id: UUID = UUID(),
+        start: Double,
+        end: Double,
+        speaker: String?,
+        speakerID: String? = nil,
+        speakerSource: SpeakerSource? = nil,
+        speakerConfidence: Double? = nil,
+        text: String
+    ) {
         self.id = id
         self.start = start
         self.end = end
         self.speaker = speaker
+        self.speakerID = speakerID
+        self.speakerSource = speakerSource
+        self.speakerConfidence = speakerConfidence
         self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case start
+        case end
+        case speaker
+        case speakerID = "speaker_id"
+        case speakerSource = "speaker_source"
+        case speakerConfidence = "speaker_confidence"
+        case text
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        start = try container.decode(Double.self, forKey: .start)
+        end = try container.decode(Double.self, forKey: .end)
+        speaker = try container.decodeIfPresent(String.self, forKey: .speaker)
+        speakerID = try container.decodeIfPresent(String.self, forKey: .speakerID)
+        speakerSource = try container.decodeIfPresent(SpeakerSource.self, forKey: .speakerSource)
+        speakerConfidence = try container.decodeIfPresent(Double.self, forKey: .speakerConfidence)
+        text = try container.decode(String.self, forKey: .text)
+    }
+}
+
+public struct DiarizationTurn: Codable, Sendable, Identifiable {
+    public let id: UUID
+    public let clusterID: String
+    public let start: Double
+    public let end: Double
+    public let sourceTrack: SpeakerSource
+    public let matchedProfileID: String?
+    public let matchedProfileName: String?
+    public let matchConfidence: Double?
+    public let representativeText: String?
+
+    public init(
+        id: UUID = UUID(),
+        clusterID: String,
+        start: Double,
+        end: Double,
+        sourceTrack: SpeakerSource,
+        matchedProfileID: String? = nil,
+        matchedProfileName: String? = nil,
+        matchConfidence: Double? = nil,
+        representativeText: String? = nil
+    ) {
+        self.id = id
+        self.clusterID = clusterID
+        self.start = start
+        self.end = end
+        self.sourceTrack = sourceTrack
+        self.matchedProfileID = matchedProfileID
+        self.matchedProfileName = matchedProfileName
+        self.matchConfidence = matchConfidence
+        self.representativeText = representativeText
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case clusterID = "cluster_id"
+        case start
+        case end
+        case sourceTrack = "source_track"
+        case matchedProfileID = "matched_profile_id"
+        case matchedProfileName = "matched_profile_name"
+        case matchConfidence = "match_confidence"
+        case representativeText = "representative_text"
+    }
+}
+
+public struct DiarizationArtifact: Codable, Sendable {
+    public let sessionID: String
+    public let runtime: String
+    public let backend: String
+    public let turns: [DiarizationTurn]
+
+    public init(sessionID: String, runtime: String, backend: String, turns: [DiarizationTurn]) {
+        self.sessionID = sessionID
+        self.runtime = runtime
+        self.backend = backend
+        self.turns = turns
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case runtime
+        case backend
+        case turns
     }
 }
 
@@ -459,11 +648,97 @@ public struct TranscriptionMetadata: Codable, Sendable {
     public let engine: String
     public let model: String
     public let language: String
+    public let runtime: String?
+    public let backend: String?
 
-    public init(engine: String, model: String, language: String) {
+    public init(engine: String, model: String, language: String, runtime: String? = nil, backend: String? = nil) {
         self.engine = engine
         self.model = model
         self.language = language
+        self.runtime = runtime
+        self.backend = backend
+    }
+}
+
+public struct SessionWarning: Codable, Sendable, Identifiable {
+    public let id: UUID
+    public let code: String
+    public let message: String
+    public let createdAt: String
+
+    public init(id: UUID = UUID(), code: String, message: String, createdAt: String) {
+        self.id = id
+        self.code = code
+        self.message = message
+        self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case code
+        case message
+        case createdAt = "created_at"
+    }
+}
+
+public enum SpeakerAssignmentState: String, Codable, CaseIterable, Sendable {
+    case anonymous
+    case suggested
+    case confirmed
+}
+
+public struct SessionSpeaker: Codable, Sendable, Identifiable {
+    public let id: String
+    public let sessionID: String
+    public let clusterID: String
+    public let displayLabel: String
+    public let sourceTrack: SpeakerSource
+    public let speakingDurationSeconds: Double
+    public let matchedProfileID: String?
+    public let matchedProfileName: String?
+    public let matchConfidence: Double?
+    public let assignmentState: SpeakerAssignmentState
+    public let representativeText: String?
+
+    public init(
+        sessionID: String,
+        clusterID: String,
+        displayLabel: String,
+        sourceTrack: SpeakerSource,
+        speakingDurationSeconds: Double,
+        matchedProfileID: String? = nil,
+        matchedProfileName: String? = nil,
+        matchConfidence: Double? = nil,
+        assignmentState: SpeakerAssignmentState,
+        representativeText: String? = nil
+    ) {
+        self.id = "\(sessionID):\(clusterID)"
+        self.sessionID = sessionID
+        self.clusterID = clusterID
+        self.displayLabel = displayLabel
+        self.sourceTrack = sourceTrack
+        self.speakingDurationSeconds = speakingDurationSeconds
+        self.matchedProfileID = matchedProfileID
+        self.matchedProfileName = matchedProfileName
+        self.matchConfidence = matchConfidence
+        self.assignmentState = assignmentState
+        self.representativeText = representativeText
+    }
+}
+
+public struct SpeakerProfile: Codable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public let sampleCount: Int
+    public let lastSeenAt: String?
+    public let archived: Bool
+
+    public init(id: String, name: String, sampleCount: Int, lastSeenAt: String?, archived: Bool) {
+        self.id = id
+        self.name = name
+        self.sampleCount = sampleCount
+        self.lastSeenAt = lastSeenAt
+        self.archived = archived
     }
 }
 
@@ -500,13 +775,47 @@ public struct SessionListItem: Identifiable, Sendable {
     public let createdAt: String
     public let updatedAt: String
     public let errorMessage: String?
+    public let warningCount: Int
 }
 
 public struct WorkerTranscriptResult: Codable, Sendable {
     public let engine: String
     public let model: String
     public let language: String
+    public let runtime: String?
+    public let backend: String?
     public let segments: [TranscriptSegment]
+
+    public init(
+        engine: String,
+        model: String,
+        language: String,
+        runtime: String? = nil,
+        backend: String? = nil,
+        segments: [TranscriptSegment]
+    ) {
+        self.engine = engine
+        self.model = model
+        self.language = language
+        self.runtime = runtime
+        self.backend = backend
+        self.segments = segments
+    }
+}
+
+public struct SpeakerEmbeddingResult: Codable, Sendable {
+    public let clusterID: String
+    public let durationSeconds: Double
+    public let representativeText: String?
+    public let embedding: [Double]
+    public let sourceTrack: SpeakerSource
+}
+
+public struct WorkerDiarizationResult: Codable, Sendable {
+    public let runtime: String
+    public let backend: String
+    public let turns: [DiarizationTurn]
+    public let embeddings: [SpeakerEmbeddingResult]
 }
 
 public enum APIRequestContext: String {

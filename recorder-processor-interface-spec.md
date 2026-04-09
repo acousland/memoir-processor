@@ -542,6 +542,37 @@ Optional fields:
     "channels": 1,
     "duration_seconds": 2548.7
   },
+  "stream_sync": {
+    "schema_version": 1,
+    "timeline": "host_time_ns",
+    "session_zero_host_time_ns": "7758391023301000",
+    "reference_stream": "system",
+    "aligned_wav_export": true,
+    "drift_corrected": false,
+    "estimated_drift_ppm": 0.0,
+    "relative_offset_to_system_seconds": 0.128625,
+    "sync_confidence": "high",
+    "echo_cancellation": {
+      "applied": false,
+      "mode": "none"
+    },
+    "streams": {
+      "system": {
+        "first_sample_host_time_ns": "7758391023301000",
+        "start_offset_seconds": 0.0,
+        "sample_rate_hz": 16000,
+        "duration_frames": 534074,
+        "latency_frames": 0
+      },
+      "mic": {
+        "first_sample_host_time_ns": "7758391151926000",
+        "start_offset_seconds": 0.128625,
+        "sample_rate_hz": 16000,
+        "duration_frames": 532579,
+        "latency_frames": 256
+      }
+    }
+  },
   "language_hint": "en",
   "notes": "optional freeform recorder-side notes"
 }
@@ -554,6 +585,20 @@ Strict rules:
 - if `mic_audio` is present, `filename` must equal `mic.wav`
 - timestamps must be ISO 8601 strings
 - duration must be greater than zero
+
+### 11.1 Recommended Sync Metadata
+
+If the Recorder captures both `system.wav` and `mic.wav`, it should also emit a `stream_sync` block describing the shared capture timeline and the per-stream offset.
+
+This is strongly recommended because transcript-text-only alignment is not reliable enough when:
+
+- microphone audio includes speaker bleed from system playback
+- system and mic streams have different device latencies
+- the two capture paths begin on slightly different buffers
+
+The authoritative recorder-side sync extension is defined in:
+
+- [recorder-audio-sync-spec.md](/Users/acousland/Local%20Workspace/Code/memoir-processor/recorder-audio-sync-spec.md)
 
 The Processor may reject malformed metadata with:
 

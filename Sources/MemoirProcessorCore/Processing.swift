@@ -5,6 +5,12 @@ public struct ValidationResult: Sendable {
     public let metadata: MetadataFile
     public let systemAudioURL: URL
     public let micAudioURL: URL?
+    public let streamSync: StreamSyncMetadata?
+}
+
+public enum PreferredTranscriptSource: String, Sendable {
+    case system
+    case mic
 }
 
 public final class SessionValidator {
@@ -39,7 +45,15 @@ public final class SessionValidator {
             try validateAudio(url: resolvedMicURL)
         }
 
-        return ValidationResult(metadata: metadata, systemAudioURL: systemURL, micAudioURL: resolvedMicURL)
+        if config.diarizationEnabled, resolvedMicURL != nil, metadata.streamSync == nil {
+            throw ProcessorError(
+                code: "invalid_metadata",
+                message: "stream_sync is required for dual-track diarization sessions.",
+                retryable: false
+            )
+        }
+
+        return ValidationResult(metadata: metadata, systemAudioURL: systemURL, micAudioURL: resolvedMicURL, streamSync: metadata.streamSync)
     }
 
     private func validateAudio(url: URL) throws {
@@ -89,6 +103,60 @@ public final class AudioNormalizer {
     }
 }
 
+public final class AudioSignalInspector {
+    public init() {}
+
+    public func peakLevel(for audioURL: URL) throws -> Float {
+        let file = try AVAudioFile(forReading: audioURL)
+        let processingFormat = file.processingFormat
+        guard let pcmFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: processingFormat.sampleRate, channels: processingFormat.channelCount, interleaved: false) else {
+            throw ProcessorError(code: "audio_analysis_failed", message: "Unable to analyze \(audioURL.lastPathComponent).", retryable: false)
+        }
+
+        let originalPosition = file.framePosition
+        defer { file.framePosition = originalPosition }
+        file.framePosition = 0
+
+        let chunkSize: AVAudioFrameCount = 4096
+        var peak: Float = 0
+
+        while true {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: chunkSize) else {
+                throw ProcessorError(code: "audio_analysis_failed", message: "Unable to allocate audio analysis buffer.", retryable: false)
+            }
+            try file.read(into: buffer)
+            let frameLength = Int(buffer.frameLength)
+            if frameLength == 0 { break }
+
+            let channelCount = Int(buffer.format.channelCount)
+            guard let channels = buffer.floatChannelData else { continue }
+            for channelIndex in 0..<channelCount {
+                let channel = channels[channelIndex]
+                for frameIndex in 0..<frameLength {
+                    let value = abs(channel[frameIndex])
+                    if value > peak { peak = value }
+                }
+            }
+        }
+
+        return peak
+    }
+
+    public func preferredTranscriptSource(systemURL: URL, micURL: URL?) throws -> PreferredTranscriptSource {
+        let systemPeak = try peakLevel(for: systemURL)
+        guard let micURL else {
+            return .system
+        }
+
+        let micPeak = try peakLevel(for: micURL)
+        if systemPeak < 0.001, micPeak >= 0.001 {
+            return .mic
+        }
+
+        return .system
+    }
+}
+
 public final class PythonTranscriptionWorker {
     private let scriptURL: URL
     private let stateQueue = DispatchQueue(label: "MemoirProcessor.PythonWorker")
@@ -123,6 +191,22 @@ public final class PythonTranscriptionWorker {
         if let languageHint, !languageHint.isEmpty {
             process.arguments?.append(contentsOf: ["--language", languageHint])
         }
+        var environment = ProcessInfo.processInfo.environment
+        let pathComponents = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ]
+        environment["PATH"] = pathComponents.joined(separator: ":")
+        if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/ffmpeg") {
+            environment["FFMPEG_BINARY"] = "/opt/homebrew/bin/ffmpeg"
+        } else if FileManager.default.fileExists(atPath: "/usr/local/bin/ffmpeg") {
+            environment["FFMPEG_BINARY"] = "/usr/local/bin/ffmpeg"
+        }
+        process.environment = environment
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -144,6 +228,32 @@ public final class PythonTranscriptionWorker {
             throw ProcessorError(code: "model_execution_failed", message: errorOutput.trimmingCharacters(in: .whitespacesAndNewlines), retryable: true)
         }
 
-        return try JSONDecoder.memoir.decode(WorkerTranscriptResult.self, from: output)
+        do {
+            return try JSONDecoder.memoir.decode(WorkerTranscriptResult.self, from: output)
+        } catch {
+            if
+                let rawOutput = String(data: output, encoding: .utf8),
+                let jsonStart = rawOutput.firstIndex(of: "{")
+            {
+                let jsonCandidate = String(rawOutput[jsonStart...])
+                if let jsonData = jsonCandidate.data(using: .utf8),
+                   let recovered = try? JSONDecoder.memoir.decode(WorkerTranscriptResult.self, from: jsonData) {
+                    return recovered
+                }
+
+                let message = jsonCandidate.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw ProcessorError(
+                    code: "invalid_worker_output",
+                    message: message.isEmpty ? "The transcription worker returned unreadable output." : "The transcription worker returned unreadable output: \(message.prefix(400))",
+                    retryable: true
+                )
+            }
+
+            throw ProcessorError(
+                code: "invalid_worker_output",
+                message: "The transcription worker returned unreadable output.",
+                retryable: true
+            )
+        }
     }
 }

@@ -9,11 +9,14 @@ struct MemoirProcessorCoreTests {
         let config = AppConfig(
             bindHost: "127.0.0.1",
             port: 8765,
+            tlsEnabled: false,
             authToken: "token",
-            transcriptionEngine: "whisper",
+            transcriptionEngine: "whisperkit",
             modelName: "base",
             maxRetries: 3,
             diarizationEnabled: false,
+            speakerAutoMatchThreshold: 0.86,
+            allowCPUFallbackForDiarization: true,
             outputFormats: ["json", "txt", "srt"],
             storageRoot: tempRoot.path,
             languageHint: nil
@@ -44,11 +47,14 @@ struct MemoirProcessorCoreTests {
         let config = AppConfig(
             bindHost: "127.0.0.1",
             port: 8765,
+            tlsEnabled: false,
             authToken: "token",
-            transcriptionEngine: "whisper",
+            transcriptionEngine: "whisperkit",
             modelName: "base",
             maxRetries: 3,
             diarizationEnabled: false,
+            speakerAutoMatchThreshold: 0.86,
+            allowCPUFallbackForDiarization: true,
             outputFormats: ["json", "txt", "srt"],
             storageRoot: tempRoot.path,
             languageHint: nil
@@ -73,7 +79,7 @@ struct MemoirProcessorCoreTests {
             transcript: CanonicalTranscript(
                 sessionID: sessionID,
                 sourceFiles: ["system": "system.wav"],
-                transcription: TranscriptionMetadata(engine: "whisper", model: "base", language: "en"),
+                transcription: TranscriptionMetadata(engine: "whisperkit", model: "base", language: "en", runtime: "WhisperKit", backend: "CoreML"),
                 segments: [
                     TranscriptSegment(start: 0, end: 2, speaker: nil, text: "Hello world")
                 ]

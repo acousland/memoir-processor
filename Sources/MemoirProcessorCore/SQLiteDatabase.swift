@@ -132,6 +132,13 @@ public enum SQLiteValue: Sendable {
         return nil
     }
 
+    public var doubleValue: Double? {
+        if case .double(let value) = self { return value }
+        if case .integer(let value) = self { return Double(value) }
+        if case .text(let value) = self { return Double(value) }
+        return nil
+    }
+
     public var boolValue: Bool {
         (intValue ?? 0) != 0
     }

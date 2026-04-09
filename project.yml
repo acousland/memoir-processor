@@ -7,6 +7,10 @@ settings:
   base:
     SWIFT_VERSION: 6.0
     MACOSX_DEPLOYMENT_TARGET: 15.0
+packages:
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit.git
+    from: 0.18.0
 targets:
   MemoirProcessorCore:
     type: library.static
@@ -33,6 +37,8 @@ targets:
         type: folder
     dependencies:
       - target: MemoirProcessorCore
+      - package: WhisperKit
+        product: WhisperKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.agent
@@ -48,6 +54,7 @@ targets:
       - path: App
       - path: Sources/MemoirProcessorApp
     resources:
+      - path: Bundle/AppIcon.icns
       - path: worker
         type: folder
       - path: proxy
@@ -58,10 +65,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.app
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Info.plist
         CODE_SIGNING_ALLOWED: NO
         PRODUCT_NAME: Memoir Processor
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
     postBuildScripts:
       - name: Bundle Agent
         script: |
@@ -69,6 +76,7 @@ targets:
           APP_DIR="${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}"
           mkdir -p "${APP_DIR}/Contents/MacOS"
           mkdir -p "${APP_DIR}/Contents/Resources"
+          cp "${PROJECT_DIR}/Bundle/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
           cp "${BUILT_PRODUCTS_DIR}/MemoirProcessorAgent" "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
           chmod +x "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
           rm -rf "${APP_DIR}/Contents/Resources/worker"

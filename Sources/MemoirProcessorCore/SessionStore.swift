@@ -50,8 +50,12 @@ public final class SessionStore: @unchecked Sendable {
                 create_request_hash TEXT NOT NULL
             );
         """)
-        try database.execute("ALTER TABLE sessions ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;", allowFailure: true)
-        try database.execute("ALTER TABLE sessions ADD COLUMN worker_pid INTEGER;", allowFailure: true)
+        if try !hasColumn("stop_requested", in: "sessions") {
+            try database.execute("ALTER TABLE sessions ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0;")
+        }
+        if try !hasColumn("worker_pid", in: "sessions") {
+            try database.execute("ALTER TABLE sessions ADD COLUMN worker_pid INTEGER;")
+        }
         try database.execute("""
             CREATE TABLE IF NOT EXISTS idempotency_records (
                 endpoint TEXT NOT NULL,
@@ -62,11 +66,66 @@ public final class SessionStore: @unchecked Sendable {
                 PRIMARY KEY(endpoint, idempotency_key)
             );
         """)
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS session_warnings (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """)
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS speaker_profiles (
+                speaker_profile_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_seen_at TEXT
+            );
+        """)
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS speaker_profile_embeddings (
+                embedding_id TEXT PRIMARY KEY,
+                speaker_profile_id TEXT NOT NULL,
+                source_session_id TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                vector_json TEXT NOT NULL,
+                quality_score REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+        """)
+        try database.execute("""
+            CREATE TABLE IF NOT EXISTS session_speakers (
+                session_id TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                display_label TEXT NOT NULL,
+                source_track TEXT NOT NULL,
+                speaking_duration_seconds REAL NOT NULL DEFAULT 0,
+                matched_profile_id TEXT,
+                matched_profile_name TEXT,
+                match_confidence REAL,
+                assignment_state TEXT NOT NULL DEFAULT 'anonymous',
+                representative_text TEXT,
+                embedding_vector_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(session_id, cluster_id)
+            );
+        """)
+    }
+
+    private func hasColumn(_ columnName: String, in tableName: String) throws -> Bool {
+        try database.fetchAll("PRAGMA table_info(\(tableName));").contains { row in
+            row["name"]?.stringValue == columnName
+        }
     }
 
     public func listSessions() throws -> [SessionListItem] {
         try database.fetchAll("""
-            SELECT session_id, session_name, ingestion_state, processing_state, attempt, created_at, updated_at, error_message
+            SELECT session_id, session_name, ingestion_state, processing_state, attempt, created_at, updated_at, error_message,
+                   (SELECT COUNT(*) FROM session_warnings WHERE session_warnings.session_id = sessions.session_id) AS warning_count
             FROM sessions
             ORDER BY created_at DESC
         """).map { row in
@@ -78,7 +137,8 @@ public final class SessionStore: @unchecked Sendable {
                 attempt: row["attempt"]?.intValue ?? 0,
                 createdAt: row["created_at"]?.stringValue ?? "",
                 updatedAt: row["updated_at"]?.stringValue ?? "",
-                errorMessage: row["error_message"]?.stringValue
+                errorMessage: row["error_message"]?.stringValue,
+                warningCount: row["warning_count"]?.intValue ?? 0
             )
         }
     }
@@ -107,7 +167,8 @@ public final class SessionStore: @unchecked Sendable {
             ),
             error: row["error_code"]?.stringValue.map {
                 ProcessorError(code: $0, message: row["error_message"]?.stringValue ?? "Unknown error", retryable: row["retryable"]?.boolValue ?? false)
-            }
+            },
+            warnings: try warnings(for: sessionID)
         )
     }
 
@@ -236,6 +297,7 @@ public final class SessionStore: @unchecked Sendable {
         if status.expectedFiles.mic {
             try verifyUploadDescriptor(sessionID: sessionID, kind: .mic, descriptor: request.uploadedFiles["mic"])
         }
+        try clearWarnings(sessionID: sessionID)
 
         let acceptedAt = Time.nowString()
         try database.execute("""
@@ -352,6 +414,9 @@ public final class SessionStore: @unchecked Sendable {
         }
 
         try? requestStopSession(sessionID: sessionID)
+        try database.execute("DELETE FROM session_warnings WHERE session_id = ?", bindings: [.text(sessionID)])
+        try database.execute("DELETE FROM session_speakers WHERE session_id = ?", bindings: [.text(sessionID)])
+        try database.execute("DELETE FROM speaker_profile_embeddings WHERE source_session_id = ?", bindings: [.text(sessionID)])
         try database.execute("DELETE FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)])
         let sessionDirectory = ProcessorPaths.sessionDirectory(for: config, sessionID: sessionID)
         if fileManager.fileExists(atPath: sessionDirectory.path) {
@@ -367,6 +432,7 @@ public final class SessionStore: @unchecked Sendable {
         """, bindings: [
             .text(ProcessingState.validating.rawValue),
             .text(ProcessingState.transcribing.rawValue),
+            .text(ProcessingState.diarizing.rawValue),
             .text(ProcessingState.writingArtifacts.rawValue)
         ])
 
@@ -413,9 +479,17 @@ public final class SessionStore: @unchecked Sendable {
         try plainText.write(to: processingDirectory.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
 
         let srt = transcript.segments.enumerated().map { index, segment in
-            "\(index + 1)\n\(Self.srtTimestamp(segment.start)) --> \(Self.srtTimestamp(segment.end))\n\(segment.text)\n"
+            let prefix = segment.speaker.map { "[\($0)] " } ?? ""
+            return "\(index + 1)\n\(Self.srtTimestamp(segment.start)) --> \(Self.srtTimestamp(segment.end))\n\(prefix)\(segment.text)\n"
         }.joined(separator: "\n")
         try srt.write(to: processingDirectory.appendingPathComponent("transcript.srt"), atomically: true, encoding: .utf8)
+    }
+
+    public func writeDiarizationArtifact(sessionID: String, artifact: DiarizationArtifact) throws {
+        let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
+        try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
+        let diarizationURL = processingDirectory.appendingPathComponent("diarization.json")
+        try JSONEncoder.memoir.encode(artifact).write(to: diarizationURL, options: .atomic)
     }
 
     public func artifactPath(sessionID: String, name: String) -> URL {
@@ -466,6 +540,261 @@ public final class SessionStore: @unchecked Sendable {
 
     public func configValue() -> AppConfig {
         config
+    }
+
+    public func warnings(for sessionID: String) throws -> [SessionWarning] {
+        try database.fetchAll("""
+            SELECT id, code, message, created_at
+            FROM session_warnings
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+        """, bindings: [.text(sessionID)]).map { row in
+            SessionWarning(
+                id: UUID(uuidString: row["id"]?.stringValue ?? "") ?? UUID(),
+                code: row["code"]?.stringValue ?? "warning",
+                message: row["message"]?.stringValue ?? "",
+                createdAt: row["created_at"]?.stringValue ?? Time.nowString()
+            )
+        }
+    }
+
+    public func addWarning(sessionID: String, code: String, message: String) throws {
+        let warning = SessionWarning(code: code, message: message, createdAt: Time.nowString())
+        try database.execute("""
+            INSERT INTO session_warnings (id, session_id, code, message, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, bindings: [
+            .text(warning.id.uuidString),
+            .text(sessionID),
+            .text(code),
+            .text(message),
+            .text(warning.createdAt)
+        ])
+    }
+
+    public func clearWarnings(sessionID: String) throws {
+        try database.execute("DELETE FROM session_warnings WHERE session_id = ?", bindings: [.text(sessionID)])
+    }
+
+    public func listSessionSpeakers(sessionID: String) throws -> [SessionSpeaker] {
+        try database.fetchAll("""
+            SELECT session_id, cluster_id, display_label, source_track, speaking_duration_seconds, matched_profile_id,
+                   matched_profile_name, match_confidence, assignment_state, representative_text
+            FROM session_speakers
+            WHERE session_id = ?
+            ORDER BY speaking_duration_seconds DESC, cluster_id ASC
+        """, bindings: [.text(sessionID)]).map { row in
+            SessionSpeaker(
+                sessionID: row["session_id"]?.stringValue ?? sessionID,
+                clusterID: row["cluster_id"]?.stringValue ?? "",
+                displayLabel: row["display_label"]?.stringValue ?? "Speaker",
+                sourceTrack: SpeakerSource(rawValue: row["source_track"]?.stringValue ?? "") ?? .unknown,
+                speakingDurationSeconds: row["speaking_duration_seconds"]?.doubleValue ?? 0,
+                matchedProfileID: row["matched_profile_id"]?.stringValue,
+                matchedProfileName: row["matched_profile_name"]?.stringValue,
+                matchConfidence: row["match_confidence"]?.doubleValue,
+                assignmentState: SpeakerAssignmentState(rawValue: row["assignment_state"]?.stringValue ?? "") ?? .anonymous,
+                representativeText: row["representative_text"]?.stringValue
+            )
+        }
+    }
+
+    public func upsertSessionSpeakers(sessionID: String, speakers: [SessionSpeaker]) throws {
+        let now = Time.nowString()
+        for speaker in speakers {
+            try database.execute("""
+                INSERT INTO session_speakers (
+                    session_id, cluster_id, display_label, source_track, speaking_duration_seconds,
+                    matched_profile_id, matched_profile_name, match_confidence, assignment_state,
+                    representative_text, embedding_vector_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, cluster_id) DO UPDATE SET
+                    display_label = excluded.display_label,
+                    source_track = excluded.source_track,
+                    speaking_duration_seconds = excluded.speaking_duration_seconds,
+                    matched_profile_id = excluded.matched_profile_id,
+                    matched_profile_name = excluded.matched_profile_name,
+                    match_confidence = excluded.match_confidence,
+                    assignment_state = excluded.assignment_state,
+                    representative_text = excluded.representative_text,
+                    updated_at = excluded.updated_at
+            """, bindings: [
+                .text(sessionID),
+                .text(speaker.clusterID),
+                .text(speaker.displayLabel),
+                .text(speaker.sourceTrack.rawValue),
+                .double(speaker.speakingDurationSeconds),
+                speaker.matchedProfileID.map(SQLiteValue.text) ?? .null,
+                speaker.matchedProfileName.map(SQLiteValue.text) ?? .null,
+                speaker.matchConfidence.map(SQLiteValue.double) ?? .null,
+                .text(speaker.assignmentState.rawValue),
+                speaker.representativeText.map(SQLiteValue.text) ?? .null,
+                .null,
+                .text(now),
+                .text(now)
+            ])
+        }
+    }
+
+    public func saveSessionSpeakerEmbedding(sessionID: String, clusterID: String, vector: [Double]) throws {
+        let vectorJSON = String(data: try JSONEncoder.memoir.encode(vector), encoding: .utf8) ?? "[]"
+        try database.execute("""
+            UPDATE session_speakers
+            SET embedding_vector_json = ?, updated_at = ?
+            WHERE session_id = ? AND cluster_id = ?
+        """, bindings: [
+            .text(vectorJSON),
+            .text(Time.nowString()),
+            .text(sessionID),
+            .text(clusterID)
+        ])
+    }
+
+    public func sessionSpeakerEmbedding(sessionID: String, clusterID: String) throws -> [Double]? {
+        guard
+            let row = try database.fetchOne("""
+                SELECT embedding_vector_json
+                FROM session_speakers
+                WHERE session_id = ? AND cluster_id = ?
+            """, bindings: [.text(sessionID), .text(clusterID)]),
+            let vectorJSON = row["embedding_vector_json"]?.stringValue,
+            let data = vectorJSON.data(using: .utf8)
+        else {
+            return nil
+        }
+        return try JSONDecoder.memoir.decode([Double].self, from: data)
+    }
+
+    public func listSpeakerProfiles(includeArchived: Bool = false) throws -> [SpeakerProfile] {
+        let query = includeArchived
+            ? """
+              SELECT p.speaker_profile_id, p.display_name, p.archived, p.last_seen_at,
+                     COUNT(e.embedding_id) AS sample_count
+              FROM speaker_profiles p
+              LEFT JOIN speaker_profile_embeddings e ON e.speaker_profile_id = p.speaker_profile_id
+              GROUP BY p.speaker_profile_id
+              ORDER BY p.archived ASC, p.display_name COLLATE NOCASE ASC
+              """
+            : """
+              SELECT p.speaker_profile_id, p.display_name, p.archived, p.last_seen_at,
+                     COUNT(e.embedding_id) AS sample_count
+              FROM speaker_profiles p
+              LEFT JOIN speaker_profile_embeddings e ON e.speaker_profile_id = p.speaker_profile_id
+              WHERE p.archived = 0
+              GROUP BY p.speaker_profile_id
+              ORDER BY p.display_name COLLATE NOCASE ASC
+              """
+        return try database.fetchAll(query).map { row in
+            SpeakerProfile(
+                id: row["speaker_profile_id"]?.stringValue ?? "",
+                name: row["display_name"]?.stringValue ?? "Speaker",
+                sampleCount: row["sample_count"]?.intValue ?? 0,
+                lastSeenAt: row["last_seen_at"]?.stringValue,
+                archived: row["archived"]?.boolValue ?? false
+            )
+        }
+    }
+
+    public func speakerProfileEmbeddings() throws -> [String: [[Double]]] {
+        let rows = try database.fetchAll("""
+            SELECT speaker_profile_id, vector_json
+            FROM speaker_profile_embeddings
+        """)
+        var results: [String: [[Double]]] = [:]
+        for row in rows {
+            guard
+                let profileID = row["speaker_profile_id"]?.stringValue,
+                let vectorJSON = row["vector_json"]?.stringValue,
+                let data = vectorJSON.data(using: .utf8),
+                let vector = try? JSONDecoder.memoir.decode([Double].self, from: data)
+            else {
+                continue
+            }
+            results[profileID, default: []].append(vector)
+        }
+        return results
+    }
+
+    public func createSpeakerProfile(name: String) throws -> SpeakerProfile {
+        let profile = SpeakerProfile(id: UUID().uuidString, name: name, sampleCount: 0, lastSeenAt: nil, archived: false)
+        let now = Time.nowString()
+        try database.execute("""
+            INSERT INTO speaker_profiles (speaker_profile_id, display_name, archived, created_at, updated_at, last_seen_at)
+            VALUES (?, ?, 0, ?, ?, NULL)
+        """, bindings: [
+            .text(profile.id),
+            .text(profile.name),
+            .text(now),
+            .text(now)
+        ])
+        return profile
+    }
+
+    public func renameSpeakerProfile(profileID: String, name: String) throws {
+        try database.execute("""
+            UPDATE speaker_profiles
+            SET display_name = ?, updated_at = ?
+            WHERE speaker_profile_id = ?
+        """, bindings: [.text(name), .text(Time.nowString()), .text(profileID)])
+        try database.execute("""
+            UPDATE session_speakers
+            SET matched_profile_name = ?, updated_at = ?
+            WHERE matched_profile_id = ?
+        """, bindings: [.text(name), .text(Time.nowString()), .text(profileID)])
+    }
+
+    public func archiveSpeakerProfile(profileID: String) throws {
+        try database.execute("""
+            UPDATE speaker_profiles
+            SET archived = 1, updated_at = ?
+            WHERE speaker_profile_id = ?
+        """, bindings: [.text(Time.nowString()), .text(profileID)])
+    }
+
+    public func saveEmbedding(profileID: String, sessionID: String, clusterID: String, vector: [Double], qualityScore: Double) throws {
+        let now = Time.nowString()
+        let vectorJSON = String(data: try JSONEncoder.memoir.encode(vector), encoding: .utf8) ?? "[]"
+        try database.execute("""
+            INSERT INTO speaker_profile_embeddings (
+                embedding_id, speaker_profile_id, source_session_id, cluster_id, vector_json, quality_score, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, bindings: [
+            .text(UUID().uuidString),
+            .text(profileID),
+            .text(sessionID),
+            .text(clusterID),
+            .text(vectorJSON),
+            .double(qualityScore),
+            .text(now)
+        ])
+        try database.execute("""
+            UPDATE speaker_profiles
+            SET updated_at = ?, last_seen_at = ?
+            WHERE speaker_profile_id = ?
+        """, bindings: [.text(now), .text(now), .text(profileID)])
+    }
+
+    public func assignSessionSpeaker(sessionID: String, clusterID: String, profileID: String, profileName: String) throws {
+        try database.execute("""
+            UPDATE session_speakers
+            SET matched_profile_id = ?,
+                matched_profile_name = ?,
+                display_label = ?,
+                assignment_state = ?,
+                match_confidence = 1.0,
+                updated_at = ?
+            WHERE session_id = ? AND cluster_id = ?
+        """, bindings: [
+            .text(profileID),
+            .text(profileName),
+            .text(profileName),
+            .text(SpeakerAssignmentState.confirmed.rawValue),
+            .text(Time.nowString()),
+            .text(sessionID),
+            .text(clusterID)
+        ])
+
+        try relabelArtifacts(sessionID: sessionID, clusterID: clusterID, profileID: profileID, profileName: profileName)
     }
 
     private func buildCreateResponse(sessionID: String, baseURL: String) -> CreateSessionResponse {
@@ -557,6 +886,57 @@ public final class SessionStore: @unchecked Sendable {
         )
         let url = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID).appendingPathComponent("job.json")
         try JSONEncoder.memoir.encode(job).write(to: url, options: .atomic)
+    }
+
+    private func relabelArtifacts(sessionID: String, clusterID: String, profileID: String, profileName: String) throws {
+        let transcriptURL = artifactPath(sessionID: sessionID, name: "transcript.json")
+        if fileManager.fileExists(atPath: transcriptURL.path) {
+            var transcript = try JSONDecoder.memoir.decode(CanonicalTranscript.self, from: Data(contentsOf: transcriptURL))
+            transcript = CanonicalTranscript(
+                sessionID: transcript.sessionID,
+                sourceFiles: transcript.sourceFiles,
+                transcription: transcript.transcription,
+                segments: transcript.segments.map { segment in
+                    guard segment.speakerID == clusterID else { return segment }
+                    return TranscriptSegment(
+                        id: segment.id,
+                        start: segment.start,
+                        end: segment.end,
+                        speaker: profileName,
+                        speakerID: profileID,
+                        speakerSource: .manual,
+                        speakerConfidence: 1.0,
+                        text: segment.text
+                    )
+                }
+            )
+            try writeTranscriptArtifacts(sessionID: sessionID, transcript: transcript)
+        }
+
+        let diarizationURL = artifactPath(sessionID: sessionID, name: "diarization.json")
+        if fileManager.fileExists(atPath: diarizationURL.path) {
+            var artifact = try JSONDecoder.memoir.decode(DiarizationArtifact.self, from: Data(contentsOf: diarizationURL))
+            artifact = DiarizationArtifact(
+                sessionID: artifact.sessionID,
+                runtime: artifact.runtime,
+                backend: artifact.backend,
+                turns: artifact.turns.map { turn in
+                    guard turn.clusterID == clusterID else { return turn }
+                    return DiarizationTurn(
+                        id: turn.id,
+                        clusterID: turn.clusterID,
+                        start: turn.start,
+                        end: turn.end,
+                        sourceTrack: turn.sourceTrack,
+                        matchedProfileID: profileID,
+                        matchedProfileName: profileName,
+                        matchConfidence: 1.0,
+                        representativeText: turn.representativeText
+                    )
+                }
+            )
+            try writeDiarizationArtifact(sessionID: sessionID, artifact: artifact)
+        }
     }
 
     private static func srtTimestamp(_ seconds: Double) -> String {

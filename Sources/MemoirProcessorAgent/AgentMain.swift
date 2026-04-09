@@ -3,19 +3,157 @@ import MemoirProcessorCore
 import Network
 import Darwin
 
+private func normalizeTranscriptText(_ text: String) -> String {
+    let lowered = text.lowercased()
+    let scalars = lowered.unicodeScalars.map { scalar -> Character in
+        CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+    }
+    return String(scalars).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
+private func textSimilarity(_ lhs: String, _ rhs: String) -> Double {
+    let normalizedLeft = normalizeTranscriptText(lhs)
+    let normalizedRight = normalizeTranscriptText(rhs)
+    guard !normalizedLeft.isEmpty, !normalizedRight.isEmpty else { return 0 }
+    if normalizedLeft == normalizedRight { return 1 }
+    if normalizedLeft.contains(normalizedRight) || normalizedRight.contains(normalizedLeft) {
+        return 0.92
+    }
+
+    let leftTokens = Set(normalizedLeft.split(separator: " ").map(String.init))
+    let rightTokens = Set(normalizedRight.split(separator: " ").map(String.init))
+    let intersection = leftTokens.intersection(rightTokens).count
+    let union = leftTokens.union(rightTokens).count
+    guard union > 0 else { return 0 }
+    return Double(intersection) / Double(union)
+}
+
+private func median(_ values: [Double]) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 0 }
+    let middle = sorted.count / 2
+    if sorted.count.isMultiple(of: 2) {
+        return (sorted[middle - 1] + sorted[middle]) / 2
+    }
+    return sorted[middle]
+}
+
+private struct SegmentMatch {
+    let systemIndex: Int
+    let micIndex: Int
+    let similarity: Double
+    let offset: Double
+}
+
+private func alignAndMergeSegments(systemSegments: [TranscriptSegment], micSegments: [TranscriptSegment]) -> (segments: [TranscriptSegment], shiftedSource: String, offset: Double, droppedDuplicates: Int) {
+    var candidates: [SegmentMatch] = []
+    for (systemIndex, system) in systemSegments.enumerated() {
+        for (micIndex, mic) in micSegments.enumerated() {
+            let similarity = textSimilarity(system.text, mic.text)
+            if similarity >= 0.6 {
+                candidates.append(
+                    SegmentMatch(
+                        systemIndex: systemIndex,
+                        micIndex: micIndex,
+                        similarity: similarity,
+                        offset: mic.start - system.start
+                    )
+                )
+            }
+        }
+    }
+
+    candidates.sort {
+        if $0.similarity == $1.similarity {
+            return abs($0.offset) < abs($1.offset)
+        }
+        return $0.similarity > $1.similarity
+    }
+
+    var usedSystem = Set<Int>()
+    var usedMic = Set<Int>()
+    var matches: [SegmentMatch] = []
+    for candidate in candidates {
+        guard !usedSystem.contains(candidate.systemIndex), !usedMic.contains(candidate.micIndex) else { continue }
+        usedSystem.insert(candidate.systemIndex)
+        usedMic.insert(candidate.micIndex)
+        matches.append(candidate)
+    }
+
+    let offsets = matches.map(\.offset)
+    let rawOffset = offsets.isEmpty ? 0 : median(offsets)
+    let shiftSystem = rawOffset >= 0
+    let appliedOffset = abs(rawOffset)
+
+    let alignedSystem = systemSegments.map {
+        TranscriptSegment(
+            start: shiftSystem ? max(0, $0.start + appliedOffset) : $0.start,
+            end: shiftSystem ? max(0, $0.end + appliedOffset) : $0.end,
+            speaker: "System",
+            text: $0.text
+        )
+    }
+    let alignedMic = micSegments.map {
+        TranscriptSegment(
+            start: shiftSystem ? $0.start : max(0, $0.start + appliedOffset),
+            end: shiftSystem ? $0.end : max(0, $0.end + appliedOffset),
+            speaker: "Mic",
+            text: $0.text
+        )
+    }
+
+    var keptMic: [TranscriptSegment] = []
+    var droppedDuplicates = 0
+    for mic in alignedMic {
+        let duplicateSystemSegment = alignedSystem.first { system in
+            let overlapWindow = abs(system.start - mic.start) <= 3.0 || mic.start <= system.end + 0.75
+            return overlapWindow && textSimilarity(system.text, mic.text) >= 0.58
+        }
+
+        if duplicateSystemSegment != nil {
+            droppedDuplicates += 1
+            continue
+        }
+
+        keptMic.append(mic)
+    }
+
+    let merged = (alignedSystem + keptMic).sorted {
+        if $0.start == $1.start { return $0.end < $1.end }
+        return $0.start < $1.start
+    }
+
+    return (
+        merged,
+        shiftSystem ? "System" : "Mic",
+        appliedOffset,
+        droppedDuplicates
+    )
+}
+
 actor QueueCoordinator {
     private let store: SessionStore
     private let validator: SessionValidator
     private let normalizer: AudioNormalizer
-    private let worker: PythonTranscriptionWorker
+    private let transcriptionWorker: WhisperKitTranscriptionWorker
+    private let diarizationWorker: PythonDiarizationWorker
     private let config: AppConfig
+    private let runtimeDependencyManager = RuntimeDependencyManager()
     private var isRunning = false
 
-    init(store: SessionStore, validator: SessionValidator, normalizer: AudioNormalizer, worker: PythonTranscriptionWorker, config: AppConfig) {
+    init(
+        store: SessionStore,
+        validator: SessionValidator,
+        normalizer: AudioNormalizer,
+        transcriptionWorker: WhisperKitTranscriptionWorker,
+        diarizationWorker: PythonDiarizationWorker,
+        config: AppConfig
+    ) {
         self.store = store
         self.validator = validator
         self.normalizer = normalizer
-        self.worker = worker
+        self.transcriptionWorker = transcriptionWorker
+        self.diarizationWorker = diarizationWorker
         self.config = config
     }
 
@@ -42,47 +180,175 @@ actor QueueCoordinator {
                 try store.appendLog(sessionID: sessionID, line: "Validation started.")
                 let validation = try validator.validate(sessionID: sessionID)
                 try stopIfRequested(sessionID: sessionID)
-                let normalizedURL = try normalizer.normalizedAudioURL(for: sessionID, sourceURL: validation.systemAudioURL)
 
                 try store.setProcessingState(sessionID: sessionID, state: .transcribing)
                 try store.appendLog(sessionID: sessionID, line: "Transcription started.")
-                let transcriptResult = try worker.transcribe(
-                    audioURL: normalizedURL,
-                    sessionID: sessionID,
+                let systemNormalizedURL = try normalizer.normalizedAudioURL(for: sessionID, sourceURL: validation.systemAudioURL)
+                let micNormalizedURL = try validation.micAudioURL.map { try normalizer.normalizedAudioURL(for: sessionID, sourceURL: $0) }
+
+                let languageHint = validation.metadata.languageHint ?? config.languageHint
+                let huggingFaceToken = runtimeDependencyManager.huggingFaceToken()
+                var sourceTranscripts: [SourceTranscript] = []
+
+                try store.appendLog(sessionID: sessionID, line: "Transcribing system audio with WhisperKit.")
+                let transcriptionStart = Date()
+                let systemTranscript = try await transcriptionWorker.transcribe(
+                    audioURL: systemNormalizedURL,
                     config: config,
-                    languageHint: validation.metadata.languageHint ?? config.languageHint,
-                    onStart: { pid in
-                        try? self.store.setWorkerPID(sessionID: sessionID, pid: pid)
-                    }
+                    languageHint: languageHint,
+                    token: nil
                 )
-                try store.setWorkerPID(sessionID: sessionID, pid: nil)
+                try store.appendLog(
+                    sessionID: sessionID,
+                    line: String(format: "System transcription completed in %.2fs using %@ (%@).", Date().timeIntervalSince(transcriptionStart), systemTranscript.runtime ?? "WhisperKit", systemTranscript.backend ?? "accelerated")
+                )
+                sourceTranscripts.append(SourceTranscript(kind: .system, transcript: systemTranscript))
+                var inferredLanguage = systemTranscript.language
+
+                if let micNormalizedURL {
+                    try store.appendLog(sessionID: sessionID, line: "Transcribing microphone audio with WhisperKit.")
+                    let micStart = Date()
+                    let micTranscript = try await transcriptionWorker.transcribe(
+                        audioURL: micNormalizedURL,
+                        config: config,
+                        languageHint: languageHint,
+                        token: nil
+                    )
+                    try store.appendLog(
+                        sessionID: sessionID,
+                        line: String(format: "Microphone transcription completed in %.2fs using %@ (%@).", Date().timeIntervalSince(micStart), micTranscript.runtime ?? "WhisperKit", micTranscript.backend ?? "accelerated")
+                    )
+                    sourceTranscripts.append(SourceTranscript(kind: .mic, transcript: micTranscript))
+                    if inferredLanguage == "unknown" {
+                        inferredLanguage = micTranscript.language
+                    }
+                }
+
+                let alignedTracks = TranscriptAlignment.align(sourceTranscripts: sourceTranscripts, streamSync: validation.streamSync)
+                var mergedSegments = TranscriptAlignment.mergeAndDedupe(alignedTracks)
+                var diarizationArtifact: DiarizationArtifact?
+
+                if config.diarizationEnabled {
+                    try stopIfRequested(sessionID: sessionID)
+                    try store.setProcessingState(sessionID: sessionID, state: .diarizing)
+                    try store.appendLog(sessionID: sessionID, line: "Diarization started.")
+                    do {
+                        var combinedTurns: [DiarizationTurn] = []
+                        var embeddingsByCluster: [String: SpeakerEmbeddingResult] = [:]
+
+                        let systemDiarizationStart = Date()
+                        let systemDiarization = try diarizationWorker.diarize(
+                            audioURL: systemNormalizedURL,
+                            sessionID: sessionID,
+                            sourceTrack: .system,
+                            config: config,
+                            huggingFaceToken: huggingFaceToken
+                        )
+                        try store.appendLog(
+                            sessionID: sessionID,
+                            line: String(format: "System diarization completed in %.2fs using %@ (%@).", Date().timeIntervalSince(systemDiarizationStart), systemDiarization.runtime, systemDiarization.backend)
+                        )
+                        combinedTurns.append(contentsOf: systemDiarization.turns)
+                        systemDiarization.embeddings.forEach { embeddingsByCluster[$0.clusterID] = $0 }
+
+                        if let micNormalizedURL {
+                            let micDiarizationStart = Date()
+                            let micDiarization = try diarizationWorker.diarize(
+                                audioURL: micNormalizedURL,
+                                sessionID: sessionID,
+                                sourceTrack: .mic,
+                                config: config,
+                                huggingFaceToken: huggingFaceToken
+                            )
+                            try store.appendLog(
+                                sessionID: sessionID,
+                                line: String(format: "Microphone diarization completed in %.2fs using %@ (%@).", Date().timeIntervalSince(micDiarizationStart), micDiarization.runtime, micDiarization.backend)
+                            )
+                            combinedTurns.append(contentsOf: micDiarization.turns)
+                            micDiarization.embeddings.forEach { embeddingsByCluster[$0.clusterID] = $0 }
+                        }
+
+                        let alignedTurns = TranscriptAlignment.align(turns: combinedTurns, streamSync: validation.streamSync)
+                        let profiles = try store.listSpeakerProfiles()
+                        let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+                        let profileEmbeddings = try store.speakerProfileEmbeddings()
+
+                        let sessionSpeakers = try buildSessionSpeakers(
+                            sessionID: sessionID,
+                            turns: alignedTurns,
+                            embeddingsByCluster: embeddingsByCluster,
+                            profilesByID: profilesByID,
+                            profileEmbeddings: profileEmbeddings
+                        )
+                        try store.upsertSessionSpeakers(sessionID: sessionID, speakers: sessionSpeakers)
+                        for (clusterID, embeddingResult) in embeddingsByCluster {
+                            try store.saveSessionSpeakerEmbedding(sessionID: sessionID, clusterID: clusterID, vector: embeddingResult.embedding)
+                        }
+
+                        let speakerByCluster = Dictionary(uniqueKeysWithValues: sessionSpeakers.map { ($0.clusterID, $0) })
+                        mergedSegments = applySpeakers(to: mergedSegments, turns: alignedTurns, speakersByCluster: speakerByCluster)
+                        diarizationArtifact = DiarizationArtifact(
+                            sessionID: sessionID,
+                            runtime: "pyannote.audio",
+                            backend: alignedTurns.first?.sourceTrack == .mic ? "mixed" : (systemDiarization.backend),
+                            turns: alignedTurns.map { turn in
+                                let speaker = speakerByCluster[turn.clusterID]
+                                return DiarizationTurn(
+                                    id: turn.id,
+                                    clusterID: turn.clusterID,
+                                    start: turn.start,
+                                    end: turn.end,
+                                    sourceTrack: turn.sourceTrack,
+                                    matchedProfileID: speaker?.matchedProfileID,
+                                    matchedProfileName: speaker?.matchedProfileName,
+                                    matchConfidence: speaker?.matchConfidence,
+                                    representativeText: speaker?.representativeText
+                                )
+                            }
+                        )
+                    } catch let diarizationError as ProcessorError {
+                        try store.addWarning(sessionID: sessionID, code: diarizationError.code, message: diarizationError.message)
+                        try store.appendLog(sessionID: sessionID, line: "Diarization warning: \(diarizationError.message)")
+                    } catch {
+                        try store.addWarning(sessionID: sessionID, code: "diarization_failed", message: error.localizedDescription)
+                        try store.appendLog(sessionID: sessionID, line: "Diarization warning: \(error.localizedDescription)")
+                    }
+                }
+
                 try stopIfRequested(sessionID: sessionID)
+
                 let sourceFiles = validation.micAudioURL == nil ? ["system": "system.wav"] : ["system": "system.wav", "mic": "mic.wav"]
                 let transcript = CanonicalTranscript(
                     sessionID: sessionID,
                     sourceFiles: sourceFiles,
-                    transcription: TranscriptionMetadata(engine: transcriptResult.engine, model: transcriptResult.model, language: transcriptResult.language),
-                    segments: transcriptResult.segments
+                    transcription: TranscriptionMetadata(
+                        engine: config.transcriptionEngine,
+                        model: config.modelName,
+                        language: inferredLanguage.isEmpty ? (languageHint ?? "unknown") : inferredLanguage,
+                        runtime: systemTranscript.runtime,
+                        backend: systemTranscript.backend
+                    ),
+                    segments: mergedSegments
                 )
 
                 try store.setProcessingState(sessionID: sessionID, state: .writingArtifacts)
                 try store.writeTranscriptArtifacts(sessionID: sessionID, transcript: transcript)
+                if let diarizationArtifact {
+                    try store.writeDiarizationArtifact(sessionID: sessionID, artifact: diarizationArtifact)
+                }
                 try store.appendLog(sessionID: sessionID, line: "Artifacts written.")
                 try store.setProcessingState(sessionID: sessionID, state: .completed)
             } catch let error as ProcessorError {
-                try? store.setWorkerPID(sessionID: sessionID, pid: nil)
                 if error.code == "session_not_found" {
                     continue
                 }
                 if (try? store.isStopRequested(sessionID: sessionID)) == true || error.code == "session_stopped" {
-                    worker.stopCurrentProcess()
                     try? store.markStopped(sessionID: sessionID)
                 } else {
                     try? store.appendLog(sessionID: sessionID, line: "Processing failed: \(error.message)")
                     try? store.markRetryPending(sessionID: sessionID, error: error)
                 }
             } catch {
-                try? store.setWorkerPID(sessionID: sessionID, pid: nil)
                 let processorError = ProcessorError(code: "internal_error", message: error.localizedDescription, retryable: true)
                 try? store.appendLog(sessionID: sessionID, line: "Processing failed: \(processorError.message)")
                 try? store.markRetryPending(sessionID: sessionID, error: processorError)
@@ -90,10 +356,112 @@ actor QueueCoordinator {
         }
     }
 
+    func prepareWhisperModel() async throws -> [String: String] {
+        let token = runtimeDependencyManager.huggingFaceToken()
+        let modelURL = try await transcriptionWorker.ensureModelDownloaded(config: config, token: token)
+        return [
+            "accepted": "true",
+            "model": config.modelName,
+            "path": modelURL.path
+        ]
+    }
+
     private func stopIfRequested(sessionID: String) throws {
         if try store.isStopRequested(sessionID: sessionID) {
             throw ProcessorError(code: "session_stopped", message: "Processing was stopped by the operator.", retryable: false)
         }
+    }
+
+    private func buildSessionSpeakers(
+        sessionID: String,
+        turns: [DiarizationTurn],
+        embeddingsByCluster: [String: SpeakerEmbeddingResult],
+        profilesByID: [String: SpeakerProfile],
+        profileEmbeddings: [String: [[Double]]]
+    ) throws -> [SessionSpeaker] {
+        let groupedTurns = Dictionary(grouping: turns, by: \.clusterID)
+        let sortedClusters = groupedTurns.keys.sorted()
+        var anonymousIndex = 1
+        var speakers: [SessionSpeaker] = []
+
+        for clusterID in sortedClusters {
+            let clusterTurns = groupedTurns[clusterID] ?? []
+            let duration = clusterTurns.reduce(0.0) { $0 + max(0, $1.end - $1.start) }
+            let sourceTrack = clusterTurns.first?.sourceTrack ?? .unknown
+            let match = embeddingsByCluster[clusterID].map {
+                SpeakerMatching.bestMatch(
+                    embedding: $0.embedding,
+                    profileEmbeddings: profileEmbeddings,
+                    profilesByID: profilesByID,
+                    threshold: config.speakerAutoMatchThreshold
+                )
+            } ?? SpeakerMatchDecision(profileID: nil, profileName: nil, confidence: nil, assignmentState: .anonymous)
+
+            let label = match.profileName ?? "Speaker \(anonymousIndex)"
+            if match.profileName == nil {
+                anonymousIndex += 1
+            }
+            speakers.append(
+                SessionSpeaker(
+                    sessionID: sessionID,
+                    clusterID: clusterID,
+                    displayLabel: label,
+                    sourceTrack: sourceTrack,
+                    speakingDurationSeconds: duration,
+                    matchedProfileID: match.profileID,
+                    matchedProfileName: match.profileName,
+                    matchConfidence: match.confidence,
+                    assignmentState: match.assignmentState,
+                    representativeText: representativeText(for: clusterTurns)
+                )
+            )
+        }
+
+        return speakers.sorted { $0.speakingDurationSeconds > $1.speakingDurationSeconds }
+    }
+
+    private func representativeText(for turns: [DiarizationTurn]) -> String? {
+        let turn = turns.sorted { ($0.end - $0.start) > ($1.end - $1.start) }.first
+        return turn?.representativeText
+    }
+
+    private func applySpeakers(
+        to segments: [TranscriptSegment],
+        turns: [DiarizationTurn],
+        speakersByCluster: [String: SessionSpeaker]
+    ) -> [TranscriptSegment] {
+        segments.map { segment in
+            let matchingTurn = turns
+                .filter { turn in
+                    if let source = segment.speakerSource, source != turn.sourceTrack {
+                        return false
+                    }
+                    return overlapDuration(startA: segment.start, endA: segment.end, startB: turn.start, endB: turn.end) > 0
+                }
+                .max { left, right in
+                    overlapDuration(startA: segment.start, endA: segment.end, startB: left.start, endB: left.end)
+                    < overlapDuration(startA: segment.start, endA: segment.end, startB: right.start, endB: right.end)
+                }
+
+            guard let matchingTurn, let sessionSpeaker = speakersByCluster[matchingTurn.clusterID] else {
+                return segment
+            }
+
+            return TranscriptSegment(
+                id: segment.id,
+                start: segment.start,
+                end: segment.end,
+                speaker: sessionSpeaker.displayLabel,
+                speakerID: sessionSpeaker.matchedProfileID ?? matchingTurn.clusterID,
+                speakerSource: matchingTurn.sourceTrack,
+                speakerConfidence: sessionSpeaker.matchConfidence,
+                text: segment.text
+            )
+        }
+    }
+
+    private func overlapDuration(startA: Double, endA: Double, startB: Double, endB: Double) -> Double {
+        max(0, min(endA, endB) - max(startA, startB))
     }
 }
 
@@ -369,7 +737,8 @@ enum MemoirProcessorAgentMain {
             store: store,
             validator: SessionValidator(config: config),
             normalizer: AudioNormalizer(config: config),
-            worker: PythonTranscriptionWorker(scriptURL: resolveWorkerScript()),
+            transcriptionWorker: WhisperKitTranscriptionWorker(),
+            diarizationWorker: PythonDiarizationWorker(scriptURL: resolveDiarizationScript()),
             config: config
         )
         Task { await queue.startRecovery() }
@@ -382,12 +751,12 @@ enum MemoirProcessorAgentMain {
         }
     }
 
-    static func resolveWorkerScript() -> URL {
-        let bundlePath = Bundle.main.resourceURL?.appendingPathComponent("worker/transcribe.py")
+    static func resolveDiarizationScript() -> URL {
+        let bundlePath = Bundle.main.resourceURL?.appendingPathComponent("worker/diarize.py")
         if let bundlePath, FileManager.default.fileExists(atPath: bundlePath.path) {
             return bundlePath
         }
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/transcribe.py")
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/diarize.py")
     }
 
     static func handle(request: HTTPRequest, config: AppConfig, store: SessionStore, queue: QueueCoordinator) async -> HTTPResponse {
@@ -397,6 +766,16 @@ enum MemoirProcessorAgentMain {
             }
 
             try authorize(request: request, config: config)
+
+            if request.method == "POST", request.path == "/v1/operator/queue/kick" {
+                Task { await queue.kick() }
+                return SimpleHTTPServer.jsonResponse(status: 202, value: ["accepted": true])
+            }
+
+            if request.method == "POST", request.path == "/v1/operator/runtime/prepare-whisper-model" {
+                let response = try await queue.prepareWhisperModel()
+                return SimpleHTTPServer.jsonResponse(status: 200, value: response)
+            }
 
             if request.method == "POST", request.path == "/v1/sessions" {
                 let body = try JSONDecoder.memoir.decode(CreateSessionRequest.self, from: request.body)

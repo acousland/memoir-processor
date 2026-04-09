@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 #if canImport(Darwin)
 import Darwin
@@ -44,6 +45,22 @@ public enum ProcessorPaths {
 
     public static func workDirectory(for config: AppConfig, sessionID: String) -> URL {
         processingDirectory(for: config, sessionID: sessionID).appendingPathComponent("work", isDirectory: true)
+    }
+
+    public static func runtimeDirectory(for config: AppConfig) -> URL {
+        root(for: config).appendingPathComponent("runtime", isDirectory: true)
+    }
+
+    public static func whisperModelDirectory(for config: AppConfig, model: String) -> URL {
+        runtimeDirectory(for: config).appendingPathComponent("whisperkit/\(model)", isDirectory: true)
+    }
+
+    public static func diarizationRuntimeDirectory(for config: AppConfig) -> URL {
+        runtimeDirectory(for: config).appendingPathComponent("diarization", isDirectory: true)
+    }
+
+    public static func speakerSamplesDirectory(for config: AppConfig, sessionID: String) -> URL {
+        processingDirectory(for: config, sessionID: sessionID).appendingPathComponent("speaker_samples", isDirectory: true)
     }
 
     public static func logsURL(for config: AppConfig, sessionID: String) -> URL {
@@ -160,7 +177,7 @@ public enum NetworkEnvironment {
                 NI_NUMERICHOST
             )
             guard result == 0 else { continue }
-            let address = String(cString: hostBuffer)
+            let address = String(decoding: hostBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             if !isLoopback {
                 addresses.append(address)
             }
@@ -220,6 +237,201 @@ public enum TailscaleEnvironment {
         }
 
         return dnsName.hasSuffix(".") ? String(dnsName.dropLast()) : dnsName
+    }
+}
+
+public struct RuntimeDependencyStatus: Sendable {
+    public let appleSiliconAvailable: Bool
+    public let pythonAvailable: Bool
+    public let whisperKitConfigured: Bool
+    public let diarizationInstalled: Bool
+    public let ffmpegAvailable: Bool
+    public let mpsAvailable: Bool
+    public let huggingFaceTokenConfigured: Bool
+
+    public var isReadyForTranscription: Bool {
+        appleSiliconAvailable && whisperKitConfigured
+    }
+
+    public var diarizationRuntimeLabel: String {
+        if !diarizationInstalled {
+            return "Missing"
+        }
+        return mpsAvailable ? "MPS" : "CPU fallback"
+    }
+
+    public init(
+        appleSiliconAvailable: Bool,
+        pythonAvailable: Bool,
+        whisperKitConfigured: Bool,
+        diarizationInstalled: Bool,
+        ffmpegAvailable: Bool,
+        mpsAvailable: Bool,
+        huggingFaceTokenConfigured: Bool
+    ) {
+        self.appleSiliconAvailable = appleSiliconAvailable
+        self.pythonAvailable = pythonAvailable
+        self.whisperKitConfigured = whisperKitConfigured
+        self.diarizationInstalled = diarizationInstalled
+        self.ffmpegAvailable = ffmpegAvailable
+        self.mpsAvailable = mpsAvailable
+        self.huggingFaceTokenConfigured = huggingFaceTokenConfigured
+    }
+}
+
+public final class RuntimeDependencyManager: @unchecked Sendable {
+    private let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
+    private let brewURL = URL(fileURLWithPath: "/opt/homebrew/bin/brew")
+    private let ffmpegCandidatePaths = [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg"
+    ]
+    private let keychainService = "com.memoir.processor"
+    private let keychainAccount = "huggingface-token"
+
+    public init() {}
+
+    public func currentStatus(config: AppConfig) -> RuntimeDependencyStatus {
+        let appleSiliconAvailable = ProcessInfo.processInfo.machineHardwareName == "arm64"
+        let pythonAvailable = FileManager.default.fileExists(atPath: pythonURL.path)
+        let whisperKitConfigured = FileManager.default.fileExists(atPath: ProcessorPaths.whisperModelDirectory(for: config, model: config.modelName).path)
+        let diarizationInstalled = pythonAvailable && runPython(arguments: ["-c", "import torch, pyannote.audio"], allowFailure: true).terminationStatus == 0
+        let ffmpegAvailable = ffmpegCandidatePaths.contains { FileManager.default.fileExists(atPath: $0) }
+        let mpsAvailable = pythonAvailable && runPython(arguments: ["-c", "import torch; print(int(torch.backends.mps.is_available()))"], allowFailure: true).output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        return RuntimeDependencyStatus(
+            appleSiliconAvailable: appleSiliconAvailable,
+            pythonAvailable: pythonAvailable,
+            whisperKitConfigured: whisperKitConfigured,
+            diarizationInstalled: diarizationInstalled,
+            ffmpegAvailable: ffmpegAvailable,
+            mpsAvailable: mpsAvailable,
+            huggingFaceTokenConfigured: huggingFaceToken() != nil
+        )
+    }
+
+    public func ensureWhisperModelDirectory(config: AppConfig) throws {
+        let modelDirectory = ProcessorPaths.whisperModelDirectory(for: config, model: config.modelName)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+    }
+
+    public func installDiarizationRuntime() throws {
+        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
+            throw ProcessorError(code: "python_missing", message: "System Python 3 is not available at /usr/bin/python3.", retryable: false)
+        }
+
+        let ensurepip = runPython(arguments: ["-m", "ensurepip", "--upgrade"], allowFailure: true)
+        if ensurepip.terminationStatus != 0,
+           !ensurepip.output.localizedCaseInsensitiveContains("already satisfied"),
+           !ensurepip.output.localizedCaseInsensitiveContains("not allowed") {
+            throw ProcessorError(code: "runtime_install_failed", message: ensurepip.output.isEmpty ? "Failed to initialize pip." : ensurepip.output, retryable: false)
+        }
+
+        let pipInstall = runPython(
+            arguments: ["-m", "pip", "install", "--user", "torch", "torchaudio", "pyannote.audio"],
+            allowFailure: true
+        )
+        guard pipInstall.terminationStatus == 0 else {
+            throw ProcessorError(code: "runtime_install_failed", message: pipInstall.output.isEmpty ? "Failed to install the diarization runtime." : pipInstall.output, retryable: false)
+        }
+    }
+
+    public func installFFmpeg() throws {
+        guard FileManager.default.fileExists(atPath: brewURL.path) else {
+            throw ProcessorError(code: "brew_missing", message: "Homebrew is required to install ffmpeg automatically. Install Homebrew or add ffmpeg to PATH manually.", retryable: false)
+        }
+
+        let process = Process()
+        process.executableURL = brewURL
+        process.arguments = ["install", "ffmpeg"]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw ProcessorError(code: "runtime_install_failed", message: error.localizedDescription, retryable: false)
+        }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile() + stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            throw ProcessorError(code: "runtime_install_failed", message: output.isEmpty ? "Failed to install ffmpeg." : output, retryable: false)
+        }
+    }
+
+    public func saveHuggingFaceToken(_ token: String?) throws {
+        let baseQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount
+        ]
+
+        SecItemDelete(baseQuery as CFDictionary)
+
+        guard let token, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
+        var addQuery = baseQuery
+        addQuery[kSecValueData as String] = Data(token.utf8)
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw ProcessorError(code: "keychain_write_failed", message: "Failed to store the Hugging Face token in Keychain.", retryable: false)
+        }
+    }
+
+    public func huggingFaceToken() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func runPython(arguments: [String], allowFailure: Bool) -> (terminationStatus: Int32, output: String) {
+        let process = Process()
+        process.executableURL = pythonURL
+        process.arguments = arguments
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return (1, error.localizedDescription)
+        }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile() + stderr.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        if !allowFailure && process.terminationStatus != 0 {
+            return (process.terminationStatus, output.isEmpty ? "Python command failed." : output)
+        }
+        return (process.terminationStatus, output)
+    }
+}
+
+private extension ProcessInfo {
+    var machineHardwareName: String {
+        var size = 0
+        sysctlbyname("hw.machine", nil, &size, nil, 0)
+        var machine = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.machine", &machine, &size, nil, 0)
+        return String(decoding: machine.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }
 

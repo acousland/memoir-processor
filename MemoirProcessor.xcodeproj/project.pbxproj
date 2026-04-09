@@ -8,13 +8,16 @@
 
 /* Begin PBXBuildFile section */
 		08F67E43BDE437543DFF0574 /* Processing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F83F90CEFBD2CAA2FF1AA2 /* Processing.swift */; };
+		11E8D126339C2EA431C9C97B /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 36982377544C3C26CB09AE38 /* WhisperKit */; };
 		1DFC62DBF6DD78CC2C69558D /* MemoirProcessorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 075CCBA7F639E676155CEC08 /* MemoirProcessorApp.swift */; };
+		26882B3479CA8E037427C80D /* WhisperKitTranscriptionWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32948AD5BA779C18517DFFB6 /* WhisperKitTranscriptionWorker.swift */; };
 		56F6371CDFCED912C6A1D99B /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
 		5E586D3B164499923626A635 /* SQLiteDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60EB982B3B8B2770BDCA309B /* SQLiteDatabase.swift */; };
 		74E0F7039670A56D4C98E525 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB2287ADF98F56D105790C38 /* SessionStore.swift */; };
 		920908BDA24EC5C7D88146F2 /* AgentMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BB7C89A2E38B89B38B3DB8C /* AgentMain.swift */; };
 		9BDD2E9DFE1814B2A3EA59D9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38C2A3105813A1242B784F0 /* ContentView.swift */; };
 		A64EB01BCCA007C9BCBCCFCA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 379A22F251C8ECCD3FFA57BF /* Models.swift */; };
+		BB4F538234D6B78F1E411ADA /* AudioIntelligence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48D97D12604B903289CC87B6 /* AudioIntelligence.swift */; };
 		C43403EDFD6DF9021598D2EA /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
 		C80C47C9C0A92535B3A8F177 /* Support.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26B23426C76A88CE9D313CAC /* Support.swift */; };
 		CFCF1300140835026B24B617 /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
@@ -59,8 +62,10 @@
 		075CCBA7F639E676155CEC08 /* MemoirProcessorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoirProcessorApp.swift; sourceTree = "<group>"; };
 		1DF1B5C2F34A3FAE076E8596 /* ServiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManager.swift; sourceTree = "<group>"; };
 		26B23426C76A88CE9D313CAC /* Support.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support.swift; sourceTree = "<group>"; };
+		32948AD5BA779C18517DFFB6 /* WhisperKitTranscriptionWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitTranscriptionWorker.swift; sourceTree = "<group>"; };
 		379A22F251C8ECCD3FFA57BF /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		438938AB90F067303FA54636 /* MemoirProcessorCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoirProcessorCoreTests.swift; sourceTree = "<group>"; };
+		48D97D12604B903289CC87B6 /* AudioIntelligence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioIntelligence.swift; sourceTree = "<group>"; };
 		4CAD46F459FFF60681C70C93 /* MemoirProcessorCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MemoirProcessorCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		56C3779560468DB9484D3527 /* MemoirProcessorAgent */ = {isa = PBXFileReference; includeInIndex = 0; path = MemoirProcessorAgent; sourceTree = BUILT_PRODUCTS_DIR; };
 		60EB982B3B8B2770BDCA309B /* SQLiteDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteDatabase.swift; sourceTree = "<group>"; };
@@ -70,6 +75,7 @@
 		A38C2A3105813A1242B784F0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AF0579FC48F68E49C5515E7D /* MemoirProcessorApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MemoirProcessorApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10A96572482D70FF0F2E56D /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		D96492B8E91BCC9AE6275F39 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DB2287ADF98F56D105790C38 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -95,6 +101,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C43403EDFD6DF9021598D2EA /* libMemoirProcessorCore.a in Frameworks */,
+				11E8D126339C2EA431C9C97B /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +154,7 @@
 		CD6945832185550FFC9DFC7E /* MemoirProcessorCore */ = {
 			isa = PBXGroup;
 			children = (
+				48D97D12604B903289CC87B6 /* AudioIntelligence.swift */,
 				379A22F251C8ECCD3FFA57BF /* Models.swift */,
 				80F83F90CEFBD2CAA2FF1AA2 /* Processing.swift */,
 				DB2287ADF98F56D105790C38 /* SessionStore.swift */,
@@ -160,6 +168,7 @@
 		E7260DB45A91E178FA7430ED /* App */ = {
 			isa = PBXGroup;
 			children = (
+				D96492B8E91BCC9AE6275F39 /* Info.plist */,
 				075CCBA7F639E676155CEC08 /* MemoirProcessorApp.swift */,
 			);
 			path = App;
@@ -169,6 +178,7 @@
 			isa = PBXGroup;
 			children = (
 				6BB7C89A2E38B89B38B3DB8C /* AgentMain.swift */,
+				32948AD5BA779C18517DFFB6 /* WhisperKitTranscriptionWorker.swift */,
 			);
 			name = MemoirProcessorAgent;
 			path = Sources/MemoirProcessorAgent;
@@ -232,6 +242,7 @@
 			);
 			name = MemoirProcessorAgent;
 			packageProductDependencies = (
+				36982377544C3C26CB09AE38 /* WhisperKit */,
 			);
 			productName = MemoirProcessorAgent;
 			productReference = 56C3779560468DB9484D3527 /* MemoirProcessorAgent */;
@@ -275,6 +286,9 @@
 			);
 			mainGroup = 2E06E175A96E2CB8095A6976;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 38045346B56FBACD270BDAC3 /* Products */;
 			projectDirPath = "";
@@ -316,7 +330,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nAPP_DIR=\"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\"\nmkdir -p \"${APP_DIR}/Contents/MacOS\"\nmkdir -p \"${APP_DIR}/Contents/Resources\"\ncp \"${BUILT_PRODUCTS_DIR}/MemoirProcessorAgent\" \"${APP_DIR}/Contents/MacOS/MemoirProcessorAgent\"\nchmod +x \"${APP_DIR}/Contents/MacOS/MemoirProcessorAgent\"\nrm -rf \"${APP_DIR}/Contents/Resources/worker\"\ncp -R \"${PROJECT_DIR}/worker\" \"${APP_DIR}/Contents/Resources/worker\"\nrm -rf \"${APP_DIR}/Contents/Resources/proxy\"\ncp -R \"${PROJECT_DIR}/proxy\" \"${APP_DIR}/Contents/Resources/proxy\"\n";
+			shellScript = "set -euo pipefail\nAPP_DIR=\"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\"\nmkdir -p \"${APP_DIR}/Contents/MacOS\"\nmkdir -p \"${APP_DIR}/Contents/Resources\"\ncp \"${PROJECT_DIR}/Bundle/AppIcon.icns\" \"${APP_DIR}/Contents/Resources/AppIcon.icns\"\ncp \"${BUILT_PRODUCTS_DIR}/MemoirProcessorAgent\" \"${APP_DIR}/Contents/MacOS/MemoirProcessorAgent\"\nchmod +x \"${APP_DIR}/Contents/MacOS/MemoirProcessorAgent\"\nrm -rf \"${APP_DIR}/Contents/Resources/worker\"\ncp -R \"${PROJECT_DIR}/worker\" \"${APP_DIR}/Contents/Resources/worker\"\nrm -rf \"${APP_DIR}/Contents/Resources/proxy\"\ncp -R \"${PROJECT_DIR}/proxy\" \"${APP_DIR}/Contents/Resources/proxy\"\n";
 		};
 		7486E5302643AF7DF6F532B1 /* Copy Swift Objective-C Interface Header */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -350,6 +364,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				920908BDA24EC5C7D88146F2 /* AgentMain.swift in Sources */,
+				26882B3479CA8E037427C80D /* WhisperKitTranscriptionWorker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -368,6 +383,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB4F538234D6B78F1E411ADA /* AudioIntelligence.swift in Sources */,
 				A64EB01BCCA007C9BCBCCFCA /* Models.swift in Sources */,
 				08F67E43BDE437543DFF0574 /* Processing.swift in Sources */,
 				5E586D3B164499923626A635 /* SQLiteDatabase.swift in Sources */,
@@ -645,8 +661,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -667,8 +683,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -732,6 +748,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.18.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		36982377544C3C26CB09AE38 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = WhisperKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = EB1F537D0FAE5A5719F10E25 /* Project object */;
 }

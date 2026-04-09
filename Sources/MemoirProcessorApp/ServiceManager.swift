@@ -48,6 +48,19 @@ final class ServiceManager {
         _ = try runLaunchctl(arguments: ["bootout", "gui/\(getuid())/\(label)"], allowFailure: false)
     }
 
+    func kickQueue(config: AppConfig) throws {
+        _ = try performOperatorRequest(path: "/v1/operator/queue/kick", config: config)
+    }
+
+    func prepareWhisperModel(config: AppConfig) throws -> [String: String] {
+        let data = try performOperatorRequest(path: "/v1/operator/runtime/prepare-whisper-model", config: config, timeout: 900)
+        guard !data.isEmpty else {
+            return [:]
+        }
+        let object = try JSONSerialization.jsonObject(with: data, options: [])
+        return object as? [String: String] ?? [:]
+    }
+
     func serviceState() -> ServiceState {
         let installed = (try? isInstalled()) == true
         guard installed else {
@@ -140,6 +153,54 @@ final class ServiceManager {
             throw ProcessorError(code: "service_command_failed", message: result.output, retryable: true)
         }
         return result.output.isEmpty ? "Running" : result.output
+    }
+
+    private func performOperatorRequest(path: String, config: AppConfig, timeout: TimeInterval = 30) throws -> Data {
+        let port = config.tlsEnabled ? config.port + 1 : config.port
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else {
+            throw ProcessorError(code: "invalid_request", message: "Unable to build local operator URL.", retryable: true)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("1", forHTTPHeaderField: "X-Memoir-API-Version")
+        request.setValue("Bearer \(config.authToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = timeout
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedData = Data()
+        var capturedResponse: URLResponse?
+        var capturedError: Error?
+
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.timeoutIntervalForRequest = timeout
+        sessionConfiguration.timeoutIntervalForResource = timeout
+        let session = URLSession(configuration: sessionConfiguration)
+
+        session.dataTask(with: request) { data, response, error in
+            capturedData = data ?? Data()
+            capturedResponse = response
+            capturedError = error
+            semaphore.signal()
+        }.resume()
+
+        semaphore.wait()
+        session.invalidateAndCancel()
+
+        if let capturedError {
+            throw ProcessorError(code: "service_command_failed", message: capturedError.localizedDescription, retryable: true)
+        }
+
+        guard let httpResponse = capturedResponse as? HTTPURLResponse else {
+            throw ProcessorError(code: "service_command_failed", message: "Operator request did not receive an HTTP response.", retryable: true)
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = String(data: capturedData, encoding: .utf8) ?? "Unknown error"
+            throw ProcessorError(code: "service_command_failed", message: body, retryable: true)
+        }
+
+        return capturedData
     }
 
     private func runLaunchctlUnchecked(arguments: [String]) -> (terminationStatus: Int32, output: String) {
