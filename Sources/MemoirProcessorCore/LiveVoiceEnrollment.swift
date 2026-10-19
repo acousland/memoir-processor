@@ -6,6 +6,12 @@ import Foundation
 public enum LiveVoiceEnrollment {
     private static let lock = NSLock()
 
+    static func sourceStart(turnStart: Double, source: SpeakerSource, streamSync: StreamSyncMetadata?) -> Double {
+        let offset = streamSync?.alignedWavExport == true ? 0 : (streamSync?.relativeOffsetToSystemSeconds ?? 0)
+        let shift = source == .mic ? max(0, offset) : source == .system ? max(0, -offset) : 0
+        return max(0, turnStart - shift)
+    }
+
     public static func enrol(store: SessionStore, config: AppConfig, sessionID: String, clusterID: String) throws {
         lock.lock(); defer { lock.unlock() }
         guard UUID(uuidString: sessionID) != nil,
@@ -25,7 +31,9 @@ public enum LiveVoiceEnrollment {
         let sourceURL = ProcessorPaths.audioURL(for: config, sessionID: sessionID, kind: turn.sourceTrack == .mic ? .mic : .system)
         let source = try AVAudioFile(forReading: sourceURL)
         let rate = source.processingFormat.sampleRate
-        let start = AVAudioFramePosition(max(0, turn.start) * rate)
+        let metadata = try JSONDecoder.memoir.decode(MetadataFile.self, from: Data(contentsOf: ProcessorPaths.metadataURL(for: config, sessionID: sessionID)))
+        let sourceTime = sourceStart(turnStart: turn.start, source: turn.sourceTrack, streamSync: metadata.streamSync)
+        let start = AVAudioFramePosition(sourceTime * rate)
         let count = AVAudioFrameCount(max(0, min(Double(source.length - start), min(10, turn.end - turn.start) * rate)))
         guard Double(count) / rate >= 2.5,
               let buffer = AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: count) else { return }

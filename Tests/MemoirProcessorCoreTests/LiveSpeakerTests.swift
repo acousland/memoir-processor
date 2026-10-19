@@ -11,6 +11,15 @@ struct LiveSpeakerTests {
         LiveWorkerOutput(turns: [LiveWorkerTurn(speakerID: id, start: 0, end: 3, quality: 0.9)], speakers: [LiveVoiceSeed(id: id, embedding: vector ?? self.vector(), duration: 3)])
     }
 
+    @Test func rememberedVoiceReadsTheOriginalTrackClock() throws {
+        let json = #"{"schema_version":1,"timeline":"host_time_ns","session_zero_host_time_ns":"1000000000","reference_stream":"system","aligned_wav_export":false,"drift_corrected":false,"estimated_drift_ppm":0,"relative_offset_to_system_seconds":2,"sync_confidence":"high","echo_cancellation":{"applied":false,"mode":"none"},"streams":{"system":{"first_sample_host_time_ns":"1000000000","start_offset_seconds":0,"sample_rate_hz":16000,"duration_frames":160000,"latency_frames":0}}}"#
+        let sync = try JSONDecoder.memoir.decode(StreamSyncMetadata.self, from: Data(json.utf8))
+        #expect(LiveVoiceEnrollment.sourceStart(turnStart: 5, source: .mic, streamSync: sync) == 3)
+        #expect(LiveVoiceEnrollment.sourceStart(turnStart: 5, source: .system, streamSync: sync) == 5)
+        let aligned = try JSONDecoder.memoir.decode(StreamSyncMetadata.self, from: Data(json.replacingOccurrences(of: "\"aligned_wav_export\":false", with: "\"aligned_wav_export\":true").utf8))
+        #expect(LiveVoiceEnrollment.sourceStart(turnStart: 5, source: .mic, streamSync: aligned) == 5)
+    }
+
     @Test func namingLearnsOnlyConfirmedVoicesAndRecognisesThemNextMeeting() throws {
         let (store, config, _) = try ReliabilityRegressionTests().fixture()
         defer { try? FileManager.default.removeItem(atPath: config.storageRoot) }
