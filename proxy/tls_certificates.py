@@ -44,7 +44,10 @@ class TLSCertificates:
         ) if os.access(path, os.X_OK)), None)
         if binary is None:
             return None
-        result = subprocess.run([binary, "status", "--json"], capture_output=True, timeout=15)
+        # The macOS app binary otherwise chooses GUI mode in launchd's shell-free
+        # environment, even with command-line arguments and a zero exit status.
+        environment = dict(os.environ, TAILSCALE_BE_CLI="1")
+        result = subprocess.run([binary, "status", "--json"], capture_output=True, timeout=15, env=environment)
         if result.returncode:
             raise RuntimeError("Tailscale status is unavailable")
         status = json.loads(result.stdout)
@@ -70,7 +73,7 @@ class TLSCertificates:
             result = subprocess.run([
                 binary, "cert", "--min-validity=336h",
                 "--cert-file", str(certificate), "--key-file", str(key), domain,
-            ], capture_output=True, timeout=120)
+            ], capture_output=True, timeout=120, env=environment)
             if result.returncode:
                 raise RuntimeError(f"Tailscale certificate request failed (exit {result.returncode})")
             os.chmod(key, 0o600)

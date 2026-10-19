@@ -233,6 +233,7 @@ public enum TailscaleEnvironment {
         let process = Process()
         process.executableURL = binaryURL
         process.arguments = ["status", "--json"]
+        process.environment = ProcessInfo.processInfo.environment.merging(["TAILSCALE_BE_CLI": "1"]) { _, value in value }
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout

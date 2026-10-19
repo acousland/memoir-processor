@@ -51,6 +51,7 @@ class CertificateTests(unittest.TestCase):
         self.pair = self.pairs[0]
 
     def command(self, arguments, **kwargs):
+        self.assertEqual(kwargs["env"]["TAILSCALE_BE_CLI"], "1")
         if arguments[1] == "status":
             return subprocess.CompletedProcess(arguments, 0, json.dumps({
                 "BackendState": "Running", "Self": {"DNSName": "processor.example.ts.net."},
