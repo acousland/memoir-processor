@@ -118,6 +118,11 @@ public final class SessionStore: @unchecked Sendable {
                 PRIMARY KEY(session_id, cluster_id)
             );
         """)
+        for table in ["session_speakers", "speaker_profile_embeddings"] {
+            if try !hasColumn("embedding_space", in: table) {
+                try database.execute("ALTER TABLE \(table) ADD COLUMN embedding_space TEXT NOT NULL DEFAULT 'legacy-pyannote-embedding';")
+            }
+        }
     }
 
     private func hasColumn(_ columnName: String, in tableName: String) throws -> Bool {
@@ -682,6 +687,14 @@ public final class SessionStore: @unchecked Sendable {
         }
     }
 
+    public func replaceSessionSpeakers(sessionID: String, speakers: [SessionSpeaker]) throws {
+        try validateSessionID(sessionID)
+        try database.transaction {
+            try database.execute("DELETE FROM session_speakers WHERE session_id = ?", bindings: [.text(sessionID)])
+            try upsertSessionSpeakers(sessionID: sessionID, speakers: speakers)
+        }
+    }
+
     public func upsertSessionSpeakers(sessionID: String, speakers: [SessionSpeaker]) throws {
         try validateSessionID(sessionID)
         let now = Time.nowString()
@@ -720,15 +733,16 @@ public final class SessionStore: @unchecked Sendable {
         }
     }
 
-    public func saveSessionSpeakerEmbedding(sessionID: String, clusterID: String, vector: [Double]) throws {
+    public func saveSessionSpeakerEmbedding(sessionID: String, clusterID: String, vector: [Double], embeddingSpace: String = "legacy-pyannote-embedding") throws {
         try validateSessionID(sessionID)
         let vectorJSON = String(data: try JSONEncoder.memoir.encode(vector), encoding: .utf8) ?? "[]"
         try database.execute("""
             UPDATE session_speakers
-            SET embedding_vector_json = ?, updated_at = ?
+            SET embedding_vector_json = ?, embedding_space = ?, updated_at = ?
             WHERE session_id = ? AND cluster_id = ?
         """, bindings: [
             .text(vectorJSON),
+            .text(embeddingSpace),
             .text(Time.nowString()),
             .text(sessionID),
             .text(clusterID)
@@ -781,11 +795,11 @@ public final class SessionStore: @unchecked Sendable {
         }
     }
 
-    public func speakerProfileEmbeddings() throws -> [String: [[Double]]] {
+    public func speakerProfileEmbeddings(embeddingSpace: String = "legacy-pyannote-embedding") throws -> [String: [[Double]]] {
         let rows = try database.fetchAll("""
             SELECT speaker_profile_id, vector_json
-            FROM speaker_profile_embeddings
-        """)
+            FROM speaker_profile_embeddings WHERE embedding_space = ?
+        """, bindings: [.text(embeddingSpace)])
         var results: [String: [[Double]]] = [:]
         for row in rows {
             guard
@@ -845,11 +859,12 @@ public final class SessionStore: @unchecked Sendable {
 
     public func saveEmbedding(profileID: String, sessionID: String, clusterID: String, vector: [Double], qualityScore: Double) throws {
         let now = Time.nowString()
+        let space = try database.fetchOne("SELECT embedding_space FROM session_speakers WHERE session_id = ? AND cluster_id = ?", bindings: [.text(sessionID), .text(clusterID)])?["embedding_space"]?.stringValue ?? "legacy-pyannote-embedding"
         let vectorJSON = String(data: try JSONEncoder.memoir.encode(vector), encoding: .utf8) ?? "[]"
         try database.execute("""
             INSERT INTO speaker_profile_embeddings (
-                embedding_id, speaker_profile_id, source_session_id, cluster_id, vector_json, quality_score, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                embedding_id, speaker_profile_id, source_session_id, cluster_id, vector_json, quality_score, created_at, embedding_space
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, bindings: [
             .text(UUID().uuidString),
             .text(profileID),
@@ -857,7 +872,8 @@ public final class SessionStore: @unchecked Sendable {
             .text(clusterID),
             .text(vectorJSON),
             .double(qualityScore),
-            .text(now)
+            .text(now),
+            .text(space)
         ])
         try database.execute("""
             UPDATE speaker_profiles

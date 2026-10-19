@@ -56,7 +56,11 @@ public enum ProcessorPaths {
     }
 
     public static func diarizationRuntimeDirectory(for config: AppConfig) -> URL {
-        runtimeDirectory(for: config).appendingPathComponent("diarization", isDirectory: true)
+        runtimeDirectory(for: config).appendingPathComponent("diarization-community-1", isDirectory: true)
+    }
+
+    public static func fluidModelsDirectory(for config: AppConfig) -> URL {
+        runtimeDirectory(for: config).appendingPathComponent("fluidaudio", isDirectory: true)
     }
 
     public static func speakerSamplesDirectory(for config: AppConfig, sessionID: String) -> URL {
@@ -317,6 +321,15 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
         let appleSiliconAvailable = ProcessInfo.processInfo.machineHardwareName == "arm64"
         let pythonAvailable = FileManager.default.fileExists(atPath: pythonURL.path)
         let whisperKitConfigured = FileManager.default.fileExists(atPath: ProcessorPaths.whisperModelDirectory(for: config, model: config.modelName).path)
+        if config.diarizationEngine == .fluidAudio {
+            return RuntimeDependencyStatus(
+                appleSiliconAvailable: appleSiliconAvailable, pythonAvailable: pythonAvailable,
+                whisperKitConfigured: whisperKitConfigured,
+                diarizationInstalled: FileManager.default.fileExists(atPath: ProcessorPaths.fluidModelsDirectory(for: config).appendingPathComponent("ready.json").path),
+                ffmpegAvailable: ffmpegCandidatePaths.contains { FileManager.default.fileExists(atPath: $0) },
+                mpsAvailable: false, huggingFaceTokenConfigured: huggingFaceToken() != nil
+            )
+        }
         let runtimePython = diarizationPythonURL(config: config)
         let diarizationInstalled = FileManager.default.fileExists(atPath: runtimePython.path) && (try? SubprocessRunner.run(executable: runtimePython, arguments: ["-c", "import torch, torchaudio, pyannote.audio"], timeout: 60).status) == 0
         let ffmpegAvailable = ffmpegCandidatePaths.contains { FileManager.default.fileExists(atPath: $0) }
@@ -341,7 +354,18 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
         ProcessorPaths.diarizationRuntimeDirectory(for: config).appendingPathComponent("venv/bin/python3")
     }
 
+    public func fluidWorkerURL() -> URL {
+        Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("MemoirDiarizationWorker")
+    }
+
     public func installDiarizationRuntime(config: AppConfig) throws {
+        if config.diarizationEngine == .fluidAudio {
+            let result = try SubprocessRunner.run(executable: fluidWorkerURL(), arguments: ["--prepare", "--models", ProcessorPaths.fluidModelsDirectory(for: config).path], timeout: 1800)
+            guard result.status == 0 else {
+                throw ProcessorError(code: "runtime_install_failed", message: String(data: result.error, encoding: .utf8) ?? "FluidAudio model preparation failed.", retryable: true)
+            }
+            return
+        }
         let candidates = ["/opt/homebrew/bin/python3.11", "/usr/local/bin/python3.11", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/python3.11").path]
         guard let interpreter = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
             throw ProcessorError(code: "python_missing", message: "Install Python 3.11 with Homebrew (brew install python@3.11), then retry.", retryable: false)
@@ -354,6 +378,18 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
         let requirementsURL = requirements.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/requirements-lock.txt")
         let result = try SubprocessRunner.run(executable: diarizationPythonURL(config: config), arguments: ["-m", "pip", "install", "-r", requirementsURL.path], timeout: 1800)
         guard result.status == 0 else { throw ProcessorError(code: "runtime_install_failed", message: String(data: result.error, encoding: .utf8) ?? "Runtime installation failed.", retryable: true) }
+        let script = Bundle.main.resourceURL?.appendingPathComponent("worker/diarize.py")
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/diarize.py")
+        var environment = ProcessInfo.processInfo.environment
+        if let token = huggingFaceToken() { environment["HF_TOKEN"] = token }
+        environment["PYANNOTE_METRICS_ENABLED"] = "0"
+        environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        var arguments = [script.path, "--prepare", "--prefer-mps"]
+        if config.allowCPUFallbackForDiarization { arguments.append("--allow-cpu-fallback") }
+        let preparation = try SubprocessRunner.run(executable: diarizationPythonURL(config: config), arguments: arguments, environment: environment, timeout: 1800)
+        guard preparation.status == 0 else {
+            throw ProcessorError(code: "model_preparation_failed", message: String(data: preparation.error, encoding: .utf8) ?? "Pyannote model preparation failed.", retryable: true)
+        }
     }
 
     public func installFFmpeg() throws {

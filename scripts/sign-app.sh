@@ -12,6 +12,9 @@ if [[ -d $framework ]]; then
   "${sign[@]}" "$framework/Versions/B/Updater.app"
   "${sign[@]}" "$framework"
 fi
+if [[ -x "$app/Contents/MacOS/MemoirDiarizationWorker" ]]; then
+  "${sign[@]}" "$app/Contents/MacOS/MemoirDiarizationWorker"
+fi
 if [[ -x "$app/Contents/MacOS/MemoirProcessorAgent" ]]; then
   "${sign[@]}" "$app/Contents/MacOS/MemoirProcessorAgent"
 fi

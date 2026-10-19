@@ -8,6 +8,9 @@ settings:
     SWIFT_VERSION: 6.0
     MACOSX_DEPLOYMENT_TARGET: 15.0
 packages:
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    exactVersion: 0.17.7
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.9.6
@@ -27,6 +30,20 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         OTHER_LDFLAGS:
           - -lsqlite3
+
+  MemoirDiarizationWorker:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/MemoirDiarizationWorker
+    dependencies:
+      - package: FluidAudio
+        product: FluidAudio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.diarization
+        CODE_SIGNING_ALLOWED: NO
+        INFOPLIST_FILE: ""
 
   MemoirProcessorAgent:
     type: tool
@@ -57,6 +74,9 @@ targets:
       - path: App
       - path: Sources/MemoirProcessorApp
     resources:
+      - path: Assets/FluidAudio-Licenses
+        type: folder
+      - path: Assets/ThirdPartyNotices.txt
       - path: Bundle/AppIcon.icns
       - path: worker
         type: folder
@@ -66,6 +86,8 @@ targets:
       - target: MemoirProcessorCore
       - target: MemoirProcessorAgent
         embed: false
+      - target: MemoirDiarizationWorker
+        embed: false
       - package: Sparkle
         product: Sparkle
     settings:
@@ -74,8 +96,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGNING_ALLOWED: NO
-        MARKETING_VERSION: 1.3.1
-        CURRENT_PROJECT_VERSION: 2026101909
+        MARKETING_VERSION: 1.4.0
+        CURRENT_PROJECT_VERSION: 2026101910
         PRODUCT_NAME: Memoir Processor
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
     postBuildScripts:
@@ -88,6 +110,11 @@ targets:
           cp "${PROJECT_DIR}/Bundle/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
           cp "${BUILT_PRODUCTS_DIR}/MemoirProcessorAgent" "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
           chmod +x "${APP_DIR}/Contents/MacOS/MemoirProcessorAgent"
+          cp "${BUILT_PRODUCTS_DIR}/MemoirDiarizationWorker" "${APP_DIR}/Contents/MacOS/MemoirDiarizationWorker"
+          chmod +x "${APP_DIR}/Contents/MacOS/MemoirDiarizationWorker"
+          if [ -d "${BUILT_PRODUCTS_DIR}/FluidAudio_FluidAudio.bundle" ]; then
+            ditto "${BUILT_PRODUCTS_DIR}/FluidAudio_FluidAudio.bundle" "${APP_DIR}/Contents/Resources/FluidAudio_FluidAudio.bundle"
+          fi
           rm -rf "${APP_DIR}/Contents/Resources/worker"
           cp -R "${PROJECT_DIR}/worker" "${APP_DIR}/Contents/Resources/worker"
           rm -rf "${APP_DIR}/Contents/Resources/proxy"

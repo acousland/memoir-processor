@@ -287,10 +287,28 @@ struct ContentView: View {
                 set: { viewModel.config = viewModel.config.updating(diarizationEnabled: $0) }
             ))
 
-            Toggle("Allow CPU fallback for diarization", isOn: Binding(
-                get: { viewModel.config.allowCPUFallbackForDiarization },
-                set: { viewModel.config = viewModel.config.updating(allowCPUFallbackForDiarization: $0) }
-            ))
+            Picker("Speaker identification engine", selection: Binding(
+                get: { viewModel.config.diarizationEngine },
+                set: { viewModel.selectDiarizationEngine($0) }
+            )) {
+                ForEach(DiarizationEngine.allCases, id: \.self) { engine in
+                    Text(engine.title).tag(engine)
+                }
+            }
+            .disabled(viewModel.preparingDiarization)
+            Text("Save configuration to use this engine for the next meeting. Current processing keeps its selected engine. Voice samples are learned separately for each engine.")
+                .font(.caption)
+                .foregroundStyle(ThreadTheme.muted)
+            if viewModel.config.diarizationEngine == .pyannote {
+                Toggle("Allow CPU fallback for Pyannote", isOn: Binding(
+                    get: { viewModel.config.allowCPUFallbackForDiarization },
+                    set: { viewModel.config = viewModel.config.updating(allowCPUFallbackForDiarization: $0) }
+                ))
+            } else {
+                Text("FluidAudio runs locally with Core ML using CPU and Neural Engine. No Hugging Face token or Python installation is needed.")
+                    .font(.caption)
+                    .foregroundStyle(ThreadTheme.muted)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -374,46 +392,48 @@ struct ContentView: View {
                 Text("Apple Silicon: \(viewModel.runtimeStatus.appleSiliconAvailable ? "Available" : "Missing")")
                 Text("WhisperKit model: \(viewModel.runtimeStatus.whisperKitConfigured ? "Ready" : "Download required")")
                 Text("Python: \(viewModel.runtimeStatus.pythonAvailable ? "Installed" : "Missing")")
-                Text("Diarization runtime: \(viewModel.runtimeStatus.diarizationRuntimeLabel)")
+                Text("\(viewModel.config.diarizationEngine.title): \(viewModel.checkingDiarizationRuntime ? "Checking…" : (viewModel.config.diarizationEngine == .fluidAudio ? (viewModel.runtimeStatus.diarizationInstalled ? "Models ready" : "Download models") : viewModel.runtimeStatus.diarizationRuntimeLabel))")
                 Text("ffmpeg: \(viewModel.runtimeStatus.ffmpegAvailable ? "Installed" : "Missing")")
-                Text("GPU/MPS: \(viewModel.runtimeStatus.mpsAvailable ? "Available" : "Unavailable")")
+                if viewModel.config.diarizationEngine == .pyannote {
+                    Text("GPU/MPS: \(viewModel.runtimeStatus.mpsAvailable ? "Available" : "Unavailable")")
+                }
             }
             .foregroundStyle(ThreadTheme.muted)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Hugging Face Token")
-                    .font(.subheadline.weight(.semibold))
-                Text("Enable public gated repository read access for the token, then accept all three model conditions before the first speaker-identification run.")
-                    .font(.caption)
-                    .foregroundStyle(ThreadTheme.muted)
-                HStack(spacing: 12) {
-                    Link("Token permissions", destination: URL(string: "https://huggingface.co/settings/tokens")!)
-                    Link("Diarization", destination: URL(string: "https://huggingface.co/pyannote/speaker-diarization-3.1")!)
-                    Link("Segmentation", destination: URL(string: "https://huggingface.co/pyannote/segmentation-3.0")!)
-                    Link("Embedding", destination: URL(string: "https://huggingface.co/pyannote/embedding")!)
-                }
-                .font(.caption)
-                SecureField("Required for pyannote model access", text: $viewModel.huggingFaceToken)
-                HStack {
-                    Button("Save Token") {
-                        Task { await viewModel.saveHuggingFaceToken() }
-                    }
-                    Text(viewModel.runtimeStatus.huggingFaceTokenConfigured ? "Stored in Keychain" : "Not configured")
+            if viewModel.config.diarizationEngine == .pyannote {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hugging Face Token")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Enable public gated repository read access for the token, then accept the Community-1 model conditions before the first speaker-identification run.")
                         .font(.caption)
                         .foregroundStyle(ThreadTheme.muted)
+                    HStack(spacing: 12) {
+                        Link("Token permissions", destination: URL(string: "https://huggingface.co/settings/tokens")!)
+                        Link("Community-1 model", destination: URL(string: "https://huggingface.co/pyannote/speaker-diarization-community-1")!)
+                    }
+                    .font(.caption)
+                    SecureField("Required for pyannote model access", text: $viewModel.huggingFaceToken)
+                    HStack {
+                        Button("Save Token") {
+                            Task { await viewModel.saveHuggingFaceToken() }
+                        }
+                        Text(viewModel.runtimeStatus.huggingFaceTokenConfigured ? "Stored in Keychain" : "Not configured")
+                            .font(.caption)
+                            .foregroundStyle(ThreadTheme.muted)
+                    }
                 }
-            }
 
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Button("Prepare WhisperKit Model") {
                     Task { await viewModel.prepareWhisperModel() }
                 }
                 .disabled(!viewModel.serviceRunning)
 
-                Button("Install Diarization Runtime") {
+                Button(viewModel.preparingDiarization ? "Preparing speaker models…" : (viewModel.config.diarizationEngine == .fluidAudio ? "Prepare FluidAudio Models" : "Prepare Pyannote Community-1")) {
                     Task { await viewModel.installDiarizationRuntime() }
                 }
-                .disabled(!viewModel.runtimeStatus.pythonAvailable || viewModel.runtimeStatus.diarizationInstalled)
+                .disabled(viewModel.preparingDiarization)
 
                 Button("Install ffmpeg") {
                     Task { await viewModel.installFFmpeg() }

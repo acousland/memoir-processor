@@ -23,6 +23,8 @@ final class AppViewModel: ObservableObject {
         mpsAvailable: false,
         huggingFaceTokenConfigured: false
     )
+    @Published var checkingDiarizationRuntime = false
+    @Published var preparingDiarization = false
     @Published var huggingFaceToken: String = ""
     @Published var message: String?
 
@@ -75,9 +77,21 @@ final class AppViewModel: ObservableObject {
             sessions = try store?.listSessions() ?? []
             speakerProfiles = try store?.listSpeakerProfiles() ?? []
             try loadSelectedSessionContext()
-            message = "Configuration saved."
+            message = "Configuration saved. Speaker engine changes apply to the next meeting."
         } catch {
             message = error.localizedDescription
+        }
+    }
+
+    func selectDiarizationEngine(_ engine: DiarizationEngine) {
+        config = config.updating(diarizationEngine: engine)
+        checkingDiarizationRuntime = true
+        let snapshot = config
+        Task {
+            let status = await Task.detached { RuntimeDependencyManager().currentStatus(config: snapshot) }.value
+            guard config.diarizationEngine == engine else { return }
+            runtimeStatus = status
+            checkingDiarizationRuntime = false
         }
     }
 
@@ -148,6 +162,9 @@ final class AppViewModel: ObservableObject {
     }
 
     func installDiarizationRuntime() async {
+        guard !preparingDiarization else { return }
+        preparingDiarization = true
+        defer { preparingDiarization = false }
         do {
             let configuration = config
             try await Task.detached { try RuntimeDependencyManager().installDiarizationRuntime(config: configuration) }.value

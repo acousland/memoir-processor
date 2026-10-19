@@ -5,11 +5,12 @@ import Darwin
 
 actor QueueCoordinator {
     private let store: SessionStore
-    private let validator: SessionValidator
+    private var validator: SessionValidator
     private let normalizer: AudioNormalizer
     private let transcriptionWorker: WhisperKitTranscriptionWorker
-    private let diarizationWorker: PythonDiarizationWorker
-    private let config: AppConfig
+    private let diarizationWorker: LocalDiarizationWorker
+    private var config: AppConfig
+    private let selectionConfigURL: URL?
     private let runtimeDependencyManager = RuntimeDependencyManager()
     private var isRunning = false
 
@@ -18,8 +19,9 @@ actor QueueCoordinator {
         validator: SessionValidator,
         normalizer: AudioNormalizer,
         transcriptionWorker: WhisperKitTranscriptionWorker,
-        diarizationWorker: PythonDiarizationWorker,
-        config: AppConfig
+        diarizationWorker: LocalDiarizationWorker,
+        config: AppConfig,
+        selectionConfigURL: URL? = nil
     ) {
         self.store = store
         self.validator = validator
@@ -27,6 +29,7 @@ actor QueueCoordinator {
         self.transcriptionWorker = transcriptionWorker
         self.diarizationWorker = diarizationWorker
         self.config = config
+        self.selectionConfigURL = selectionConfigURL
     }
 
     func startRecovery() async {
@@ -47,6 +50,16 @@ actor QueueCoordinator {
             let nextSession = try? store.claimNextRunnableSession()
             guard let sessionID = nextSession ?? nil else { break }
             do {
+                // Snapshot engine preferences once per meeting; never switch devices
+                // or embedding spaces halfway through the two source tracks.
+                if let selectionConfigURL {
+                    let saved = try JSONDecoder.memoir.decode(AppConfig.self, from: Data(contentsOf: selectionConfigURL))
+                    config = config.updating(diarizationEnabled: saved.diarizationEnabled,
+                        diarizationEngine: saved.diarizationEngine,
+                        speakerAutoMatchThreshold: saved.speakerAutoMatchThreshold,
+                        allowCPUFallbackForDiarization: saved.allowCPUFallbackForDiarization)
+                    validator = SessionValidator(config: config)
+                }
                 try stopIfRequested(sessionID: sessionID)
                 try store.setProcessingState(sessionID: sessionID, state: .validating)
                 try store.appendLog(sessionID: sessionID, line: "Validation started.")
@@ -59,7 +72,7 @@ actor QueueCoordinator {
                 let micNormalizedURL = try validation.micAudioURL.map { try normalizer.normalizedAudioURL(for: sessionID, sourceURL: $0) }
 
                 let languageHint = validation.metadata.languageHint ?? config.languageHint
-                let huggingFaceToken = config.diarizationEnabled ? runtimeDependencyManager.huggingFaceToken() : nil
+                let huggingFaceToken = config.diarizationEnabled ? (config.diarizationEngine == .pyannote ? runtimeDependencyManager.huggingFaceToken() : nil) : nil
                 var sourceTranscripts: [SourceTranscript] = []
 
                 try store.appendLog(sessionID: sessionID, line: "Transcribing system audio with WhisperKit.")
@@ -103,7 +116,7 @@ actor QueueCoordinator {
                 if config.diarizationEnabled {
                     try stopIfRequested(sessionID: sessionID)
                     try store.setProcessingState(sessionID: sessionID, state: .diarizing)
-                    try store.appendLog(sessionID: sessionID, line: "Diarization started.")
+                    try store.appendLog(sessionID: sessionID, line: "Diarization started with \(config.diarizationEngine.title).")
                     do {
                         var combinedTurns: [DiarizationTurn] = []
                         var embeddingsByCluster: [String: SpeakerEmbeddingResult] = [:]
@@ -148,7 +161,7 @@ actor QueueCoordinator {
                         let alignedTurns = TranscriptAlignment.align(turns: combinedTurns, streamSync: validation.streamSync)
                         let profiles = try store.listSpeakerProfiles()
                         let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-                        let profileEmbeddings = try store.speakerProfileEmbeddings()
+                        let profileEmbeddings = try store.speakerProfileEmbeddings(embeddingSpace: config.diarizationEngine.embeddingSpace)
 
                         let sessionSpeakers = try buildSessionSpeakers(
                             sessionID: sessionID,
@@ -157,16 +170,16 @@ actor QueueCoordinator {
                             profilesByID: profilesByID,
                             profileEmbeddings: profileEmbeddings
                         )
-                        try store.upsertSessionSpeakers(sessionID: sessionID, speakers: sessionSpeakers)
+                        try store.replaceSessionSpeakers(sessionID: sessionID, speakers: sessionSpeakers)
                         for (clusterID, embeddingResult) in embeddingsByCluster {
-                            try store.saveSessionSpeakerEmbedding(sessionID: sessionID, clusterID: clusterID, vector: embeddingResult.embedding)
+                            try store.saveSessionSpeakerEmbedding(sessionID: sessionID, clusterID: clusterID, vector: embeddingResult.embedding, embeddingSpace: config.diarizationEngine.embeddingSpace)
                         }
 
                         let speakerByCluster = Dictionary(uniqueKeysWithValues: sessionSpeakers.map { ($0.clusterID, $0) })
                         mergedSegments = applySpeakers(to: mergedSegments, turns: alignedTurns, speakersByCluster: speakerByCluster)
                         diarizationArtifact = DiarizationArtifact(
                             sessionID: sessionID,
-                            runtime: "pyannote.audio",
+                            runtime: systemDiarization.runtime,
                             backend: diarizationBackends.sorted(by: >).joined(separator: "+"),
                             turns: alignedTurns.map { turn in
                                 let speaker = speakerByCluster[turn.clusterID]
@@ -576,10 +589,15 @@ final class HTTPSProxyManager {
 enum MemoirProcessorAgentMain {
     static func main() throws {
         let config: AppConfig
+        let selectionConfigURL: URL
         if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.indices.contains(index + 1) {
             let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
             config = try JSONDecoder.memoir.decode(AppConfig.self, from: Data(contentsOf: url))
-        } else { config = try ConfigStore().load() }
+            selectionConfigURL = url
+        } else {
+            config = try ConfigStore().load()
+            selectionConfigURL = ProcessorPaths.configURL(for: config)
+        }
         guard (1...65534).contains(config.port) else { throw ProcessorError(code: "configuration_invalid", message: "Port must be between 1 and 65534.", retryable: false) }
         try FileManager.default.createDirectory(at: ProcessorPaths.root(for: config), withIntermediateDirectories: true)
         let lockFD = open(ProcessorPaths.root(for: config).appendingPathComponent("agent.lock").path, O_CREAT | O_RDWR, 0o600)
@@ -607,8 +625,9 @@ enum MemoirProcessorAgentMain {
             validator: SessionValidator(config: config),
             normalizer: AudioNormalizer(config: config),
             transcriptionWorker: WhisperKitTranscriptionWorker(),
-            diarizationWorker: PythonDiarizationWorker(scriptURL: resolveDiarizationScript()),
-            config: config
+            diarizationWorker: LocalDiarizationWorker(scriptURL: resolveDiarizationScript()),
+            config: config,
+            selectionConfigURL: selectionConfigURL
         )
         Task {
             await queue.startRecovery()

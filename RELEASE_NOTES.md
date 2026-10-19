@@ -1,9 +1,9 @@
-# Memoir Processor 1.3.1 — GPU diarization repair
+# Memoir Processor 1.4.0 — Choose your speaker engine
 
-- Keeps input audio on CPU while pyannote transfers inference chunks to the Apple GPU (MPS).
-- Moves both the voice-embedding model and its inference device when CPU fallback is required. Disabling fallback prevents silent CPU execution.
-- Separates model setup failures from inference failures. Missing Hugging Face model permissions now explain which token setting and model approval are required, instead of reporting a failed CPU retry.
-- Adds links to all three required model approvals and token permissions in Settings. Runtime installation status is separate from GPU availability.
-- Records the actual combined backend when system and microphone tracks use different devices.
+- Switch between **FluidAudio · Core ML** and **Pyannote Community-1 · GPU** in Settings. Save Configuration applies the choice to the next meeting without interrupting active processing.
+- FluidAudio uses the offline VBx pipeline on Core ML with CPU/Neural Engine compute. Its models download without a token or Python installation. Older configurations start with FluidAudio on upgrade.
+- Upgrades Pyannote from legacy 3.1 to Community-1, including exclusive speaker turns for transcript alignment and built-in voice embeddings. Uses a separate Python 3.11 runtime, MPS acceleration and optional CPU inference fallback. Hugging Face model approval and token access are required; telemetry is disabled.
+- Adds engine-specific model preparation controls and runtime status. Logs and artifacts identify the engine/backend used.
+- Keeps voice samples separate by model family to prevent incompatible samples from producing false speaker matches. Names and existing samples are preserved. Reprocessing replaces old speaker clusters cleanly.
 
-Compatible with Memoir Recorder 1.2.0 or later. Model downloads require authorized Hugging Face access; recording and transcription remain local.
+Compatible with Memoir Recorder 1.2.0 or later. Audio processing remains local. Requires macOS 15 or later.

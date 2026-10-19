@@ -17,7 +17,12 @@ Without Tailscale HTTPS provisioning, the processor uses the certificate and key
 
 Prepare the WhisperKit model from Runtime. Initial preparation requires a download; transcription thereafter runs locally. Start with diarization disabled. Completed sessions contain JSON, plain-text and SRT transcripts. Refresh updates the session list; artifacts can be opened from the session view. Audio, metadata, outputs and job logs remain together.
 
-Speaker identification is optional. Install a Python 3.11 interpreter, then use **Install Diarization Runtime** to create an isolated environment in application storage. Dependencies are specified in `worker/requirements.txt` and `worker/requirements-lock.txt`. Provide a Hugging Face token and accept access conditions for the legacy `pyannote/speaker-diarization-3.1`, `pyannote/segmentation-3.0` and `pyannote/embedding` models. Fine-grained tokens must enable **Read access to contents of all public gated repos you can access**. Models download once and inference runs locally, using the Apple GPU through PyTorch MPS when available. CPU fallback applies only to inference failures; model access errors identify the required permissions. The processing log records the backend actually used (`mps`, `cpu`, or `mps+cpu` for GPU diarization with CPU voice embeddings). Model authorization and diarization quality must be verified with representative audio. A diarization failure produces a visible warning while retaining the basic transcript.
+Speaker identification is optional. Choose **FluidAudio · Core ML** or **Pyannote Community-1 · GPU** in Settings, prepare that engine, and **Save Configuration**. The choice applies to the next queued meeting without restarting or interrupting active processing. Existing configurations default to FluidAudio when upgraded. Transcription remains WhisperKit for either diarization engine.
+
+- **FluidAudio** uses its offline VBx pipeline with Core ML configured for CPU and Apple Neural Engine. Models download once through **Prepare FluidAudio Models**. It needs no Python or Hugging Face token. Core ML controls actual operation placement; the log reports the configured CPU/ANE backend.
+- **Pyannote Community-1** uses an isolated Python 3.11 environment and PyTorch MPS on Apple Silicon. Install Python 3.11 and use **Prepare Pyannote Community-1**. Accept [Community-1 model conditions](https://huggingface.co/pyannote/speaker-diarization-community-1), save your Hugging Face token, and enable **Read access to contents of all public gated repos you can access** for fine-grained tokens. The previous legacy 3.1 Python environment is retained but no longer used. CPU fallback is optional and applies only to inference failures. Pyannote telemetry is disabled.
+
+Voice samples are tagged with their engine/model family. Names and old samples remain stored, while automatic matches only compare compatible samples. When using the other engine, identify a person again to enrol a voice sample for that engine. The processing log and diarization artifact identify the engine/backend used. **Retry** on an existing meeting runs the saved engine and replaces its speaker clusters; original audio remains available. Model downloads need internet access; audio processing stays local. A diarization failure produces a visible warning while retaining the basic transcript.
 
 ## Develop and test
 
@@ -33,7 +38,8 @@ The GUI scheme runs the app and includes core tests. Test coverage includes alig
 A GPU diarization smoke check synthesizes two voices, reads the saved Keychain token, and runs the actual models with CPU fallback disabled. It uses temporary files and never changes the meeting archive:
 
 ```sh
-python3 scripts/smoke-diarization.py
+python3 scripts/smoke-diarization.py --engine pyannote
+python3 scripts/smoke-diarization.py --engine fluidaudio
 ```
 
 An optional end-to-end smoke check synthesizes speech, launches an isolated agent, checks HTTP errors/authentication/uploads, runs WhisperKit, and validates transcript artifacts. It downloads a base model and never records a microphone:
@@ -43,6 +49,12 @@ python3 scripts/smoke-agent.py /path/to/MemoirProcessorAgent
 ```
 
 For headless deployment, `MemoirProcessorAgent --config /absolute/config.json` reads an explicit configuration directly. Keep that file owner-readable only if it contains a token. Without this flag, the agent uses the GUI configuration and Keychain. An exclusive storage lock prevents duplicate agents. Upload bodies are limited to 1 GiB per file and streamed to temporary storage; the native listener admits at most 64 concurrent connections with a ten-minute request deadline. Transcription jobs run one at a time.
+
+An integration check uploads isolated synthetic meetings to one real agent, changes the saved engine between jobs, and verifies the resulting speaker-labelled artifacts without restarting:
+
+```sh
+python3 scripts/smoke-engine-switch.py /path/to/MemoirProcessorAgent
+```
 
 ## Release and updates
 

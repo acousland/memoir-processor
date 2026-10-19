@@ -36,7 +36,7 @@ public struct SpeakerMatchDecision: Sendable {
     }
 }
 
-public final class PythonDiarizationWorker: @unchecked Sendable {
+public final class LocalDiarizationWorker: @unchecked Sendable {
     private let scriptURL: URL
 
     public init(scriptURL: URL) {
@@ -51,13 +51,30 @@ public final class PythonDiarizationWorker: @unchecked Sendable {
         huggingFaceToken: String?,
         onStart: ((Int32) -> Void)? = nil
     ) throws -> WorkerDiarizationResult {
-        let python = RuntimeDependencyManager().diarizationPythonURL(config: config)
-        var arguments = [scriptURL.path, "--audio", audioURL.path, "--session-id", sessionID, "--source-track", sourceTrack.rawValue]
-        if config.allowCPUFallbackForDiarization { arguments.append("--allow-cpu-fallback") }
-        arguments.append("--prefer-mps")
-        var environment = ProcessInfo.processInfo.environment
-        if let huggingFaceToken { environment["HF_TOKEN"] = huggingFaceToken }
-        let result = try SubprocessRunner.run(executable: python, arguments: arguments, environment: environment, onStart: onStart)
+        let runtime = RuntimeDependencyManager()
+        let result: SubprocessResult
+        switch config.diarizationEngine {
+        case .fluidAudio:
+            result = try SubprocessRunner.run(
+                executable: runtime.fluidWorkerURL(),
+                arguments: ["--audio", audioURL.path, "--source-track", sourceTrack.rawValue,
+                            "--models", ProcessorPaths.fluidModelsDirectory(for: config).path],
+                onStart: onStart
+            )
+        case .pyannote:
+            let python = runtime.diarizationPythonURL(config: config)
+            guard FileManager.default.fileExists(atPath: python.path) else {
+                throw ProcessorError(code: "diarization_runtime_missing", message: "Prepare the Pyannote Community-1 runtime in Processor Settings.", retryable: false)
+            }
+            var arguments = [scriptURL.path, "--audio", audioURL.path, "--session-id", sessionID, "--source-track", sourceTrack.rawValue]
+            if config.allowCPUFallbackForDiarization { arguments.append("--allow-cpu-fallback") }
+            arguments.append("--prefer-mps")
+            var environment = ProcessInfo.processInfo.environment
+            if let huggingFaceToken { environment["HF_TOKEN"] = huggingFaceToken }
+            environment["PYANNOTE_METRICS_ENABLED"] = "0"
+            environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
+            result = try SubprocessRunner.run(executable: python, arguments: arguments, environment: environment, onStart: onStart)
+        }
         guard result.status == 0 else {
             throw ProcessorError(code: "diarization_failed", message: String(data: result.error, encoding: .utf8) ?? "Diarization failed.", retryable: true)
         }

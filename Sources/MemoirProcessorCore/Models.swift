@@ -269,6 +269,25 @@ public struct SessionStatusResponse: Codable, Sendable {
     }
 }
 
+public enum DiarizationEngine: String, Codable, CaseIterable, Sendable {
+    case fluidAudio = "fluidaudio"
+    case pyannote = "pyannote"
+
+    public var title: String {
+        switch self {
+        case .fluidAudio: return "FluidAudio · Core ML"
+        case .pyannote: return "Pyannote Community-1 · GPU"
+        }
+    }
+
+    public var embeddingSpace: String {
+        switch self {
+        case .fluidAudio: return "fluidaudio-offline-vbx-0.17.7"
+        case .pyannote: return "pyannote-community-1-resnet34"
+        }
+    }
+}
+
 public struct AppConfig: Codable, Sendable {
     public let bindHost: String
     public let port: Int
@@ -278,6 +297,7 @@ public struct AppConfig: Codable, Sendable {
     public let modelName: String
     public let maxRetries: Int
     public let diarizationEnabled: Bool
+    public let diarizationEngine: DiarizationEngine
     public let speakerAutoMatchThreshold: Double
     public let allowCPUFallbackForDiarization: Bool
     public let outputFormats: [String]
@@ -293,6 +313,7 @@ public struct AppConfig: Codable, Sendable {
         modelName: String,
         maxRetries: Int,
         diarizationEnabled: Bool,
+        diarizationEngine: DiarizationEngine = .fluidAudio,
         speakerAutoMatchThreshold: Double,
         allowCPUFallbackForDiarization: Bool,
         outputFormats: [String],
@@ -307,6 +328,7 @@ public struct AppConfig: Codable, Sendable {
         self.modelName = modelName
         self.maxRetries = maxRetries
         self.diarizationEnabled = diarizationEnabled
+        self.diarizationEngine = diarizationEngine
         self.speakerAutoMatchThreshold = speakerAutoMatchThreshold
         self.allowCPUFallbackForDiarization = allowCPUFallbackForDiarization
         self.outputFormats = outputFormats
@@ -343,6 +365,7 @@ public struct AppConfig: Codable, Sendable {
         case modelName
         case maxRetries
         case diarizationEnabled
+        case diarizationEngine
         case speakerAutoMatchThreshold
         case allowCPUFallbackForDiarization
         case outputFormats
@@ -360,6 +383,7 @@ public struct AppConfig: Codable, Sendable {
         modelName = try container.decode(String.self, forKey: .modelName)
         maxRetries = try container.decode(Int.self, forKey: .maxRetries)
         diarizationEnabled = try container.decode(Bool.self, forKey: .diarizationEnabled)
+        diarizationEngine = try container.decodeIfPresent(DiarizationEngine.self, forKey: .diarizationEngine) ?? .fluidAudio
         speakerAutoMatchThreshold = try container.decodeIfPresent(Double.self, forKey: .speakerAutoMatchThreshold) ?? 0.86
         allowCPUFallbackForDiarization = try container.decodeIfPresent(Bool.self, forKey: .allowCPUFallbackForDiarization) ?? true
         outputFormats = try container.decode([String].self, forKey: .outputFormats)
@@ -376,6 +400,7 @@ public struct AppConfig: Codable, Sendable {
         modelName: String? = nil,
         maxRetries: Int? = nil,
         diarizationEnabled: Bool? = nil,
+        diarizationEngine: DiarizationEngine? = nil,
         speakerAutoMatchThreshold: Double? = nil,
         allowCPUFallbackForDiarization: Bool? = nil,
         outputFormats: [String]? = nil,
@@ -391,6 +416,7 @@ public struct AppConfig: Codable, Sendable {
             modelName: modelName ?? self.modelName,
             maxRetries: maxRetries ?? self.maxRetries,
             diarizationEnabled: diarizationEnabled ?? self.diarizationEnabled,
+            diarizationEngine: diarizationEngine ?? self.diarizationEngine,
             speakerAutoMatchThreshold: speakerAutoMatchThreshold ?? self.speakerAutoMatchThreshold,
             allowCPUFallbackForDiarization: allowCPUFallbackForDiarization ?? self.allowCPUFallbackForDiarization,
             outputFormats: outputFormats ?? self.outputFormats,
