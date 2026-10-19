@@ -3,12 +3,11 @@ import argparse
 import http.client
 import os
 import signal
-import ssl
 import sys
 import traceback
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from tls_certificates import TLSCertificates
 
 
 HOP_BY_HOP_HEADERS = {
@@ -76,7 +75,7 @@ def main() -> int:
                 conn = http.client.HTTPConnection(args.target_host, args.target_port, timeout=30)
                 try:
                     headers["Content-Length"] = str(content_length)
-                    conn.putrequest(self.command, self.path, skip_host=True)
+                    conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
                     for name, value in headers.items():
                         conn.putheader(name, value)
                     conn.endheaders()
@@ -116,15 +115,22 @@ def main() -> int:
         flush=True,
     )
 
+    certificates = TLSCertificates(args.cert, args.key, lambda message: print(message, file=sys.stderr, flush=True))
+    context = certificates.initial_context()
+    active_context = [context]
+    # Select the current context for each handshake. Python 3.9 cannot assign
+    # SSLSocket.context on a listening socket because it has no SSL object yet.
+    context.set_servername_callback(lambda connection, _name, _initial: setattr(connection, "context", active_context[0]))
     httpd = ThreadingHTTPServer((args.bind_host, args.listen_port), ProxyHandler)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(certfile=args.cert, keyfile=args.key)
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
 
     with open(args.pid_file, "w", encoding="utf-8") as handle:
         handle.write(str(os.getpid()))
 
+    stopped = threading.Event()
+
     def shutdown(*_args):
+        stopped.set()
         try:
             os.remove(args.pid_file)
         except FileNotFoundError:
@@ -136,13 +142,28 @@ def main() -> int:
 
     def monitor_parent():
         while os.getppid() == args.parent_pid:
-            time.sleep(1)
+            if stopped.wait(1):
+                return
+        stopped.set()
         httpd.shutdown()
 
+    def renew_certificates():
+        while not stopped.wait(6 * 60 * 60):
+            try:
+                renewed = certificates.refresh()
+                if renewed is not None:
+                    # Accepted sockets keep their context; subsequent connections
+                    # use the renewed certificate without restarting the server.
+                    active_context[0] = renewed
+            except Exception as error:
+                print(f"HTTPS certificate renewal failed: {error}; will retry in six hours.", file=sys.stderr, flush=True)
+
     threading.Thread(target=monitor_parent, daemon=True).start()
+    threading.Thread(target=renew_certificates, daemon=True).start()
     try:
         httpd.serve_forever()
     finally:
+        stopped.set()
         try:
             os.remove(args.pid_file)
         except FileNotFoundError:

@@ -6,7 +6,9 @@ A native macOS app and background agent for receiving Memoir recordings and prod
 
 Move **Memoir Processor.app** to Applications before installing its launch agent. Open Settings, save configuration, then install/start the agent. Copy the API token into the recorder. It is stored in Keychain; macOS may request access when the agent first reads a token created by the GUI.
 
-Default HTTPS listens on port 8765. The internal HTTP listener is loopback-only on the next port. The app generates a self-signed certificate under `<storage root>/tls`; establish trust on the recording Mac before connecting. There is no blanket TLS bypass. Use trusted network provisioning or a certificate signed by a trusted CA when distributing across Macs.
+Default HTTPS listens on port 8765. The internal HTTP listener is loopback-only on the next port. With Tailscale running and HTTPS certificates enabled in its admin console, the proxy obtains a trusted certificate for this Mac's full Tailscale DNS name. Enter `https://<machine>.<tailnet>.ts.net:8765` in the recorder; keep both Macs connected to Tailscale. Certificate renewal is checked every six hours and loaded without interrupting existing connections. Complete certificate/key pairs are published atomically under `<storage root>/tls/tailscale-certificates`, and provisioning failures retain the previous certificate and appear in the agent error log.
+
+Without Tailscale HTTPS provisioning, the processor uses the certificate and key at `<storage root>/tls/server.crt` and `server.key` (generating a self-signed pair if absent). Supply a trusted certificate matching the hostname or establish certificate trust on the recording Mac before connecting.
 
 Prepare the WhisperKit model from Runtime. Initial preparation requires a download; transcription thereafter runs locally. Start with diarization disabled. Completed sessions contain JSON, plain-text and SRT transcripts. Refresh updates the session list; artifacts can be opened from the session view. Audio, metadata, outputs and job logs remain together.
 
