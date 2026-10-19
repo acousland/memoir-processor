@@ -1,5 +1,12 @@
 import Foundation
 
+public enum TranscriptText {
+    public static func containsSpeech(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return !normalized.isEmpty && !["[BLANK_AUDIO]", "[NO_SPEECH]", "[SILENCE]", "(SILENCE)", "<|NOSPEECH|>"].contains(normalized)
+    }
+}
+
 public struct MeetingSummary: Codable, Identifiable, Sendable {
     public let id: String
     public let title: String
@@ -91,7 +98,7 @@ extension SessionStore {
                     modified.map(SQLiteValue.double) ?? .null, .text(Time.nowString())])
             let title = try database.fetchOne("SELECT title_override FROM meeting_documents WHERE session_id=?", bindings: [.text(sessionID)])?["title_override"]?.stringValue ?? row["session_name"]?.stringValue ?? "Meeting"
             try database.execute("DELETE FROM meeting_search WHERE session_id=?", bindings: [.text(sessionID)])
-            try database.execute("INSERT INTO meeting_search(session_id,title,transcript) VALUES (?,?,?)", bindings: [.text(sessionID), .text(title), .text(transcript?.segments.map { "\(Self.meetingSegment($0).speaker): \($0.text)" }.joined(separator: "\n") ?? "")])
+            try database.execute("INSERT INTO meeting_search(session_id,title,transcript) VALUES (?,?,?)", bindings: [.text(sessionID), .text(title), .text(transcript?.segments.filter { TranscriptText.containsSpeech($0.text) }.map { "\(Self.meetingSegment($0).speaker): \($0.text)" }.joined(separator: "\n") ?? "")])
         }
     }
 
@@ -125,7 +132,7 @@ extension SessionStore {
                 throw ProcessorError(code: "session_not_found", message: "Meeting does not exist.", retryable: false)
             }
             let transcript = try loadMeetingTranscript(sessionID: sessionID)
-            return MeetingDocument(meeting: summary(row), segments: transcript?.segments.map(Self.meetingSegment) ?? [])
+            return MeetingDocument(meeting: summary(row), segments: transcript?.segments.filter { TranscriptText.containsSpeech($0.text) }.map(Self.meetingSegment) ?? [])
         }
     }
 

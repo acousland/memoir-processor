@@ -36,7 +36,7 @@ final class WhisperKitTranscriptionWorker: @unchecked Sendable {
         let rawSegments = results.flatMap { $0.segments }
         let flattenedSegments = rawSegments.compactMap { segment -> TranscriptSegment? in
             let text = segment.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
+            guard TranscriptText.containsSpeech(text) else { return nil }
             return TranscriptSegment(
                 start: Double(segment.start),
                 end: Double(segment.end),

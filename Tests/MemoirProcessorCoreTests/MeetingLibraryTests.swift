@@ -77,6 +77,20 @@ struct MeetingLibraryTests {
         #expect(throws: ProcessorError.self) { try store.searchMeetings(limit: 101) }
     }
 
+    @Test func silenceMarkersAreExcludedFromLibraryAndSearch() throws {
+        let (store, config, id) = try fixture()
+        defer { try? FileManager.default.removeItem(atPath: config.storageRoot) }
+        let transcript = CanonicalTranscript(sessionID: id, sourceFiles: ["system": "system.wav"], transcription: TranscriptionMetadata(engine: "whisperkit", model: "base", language: "en"), segments: [
+            TranscriptSegment(start: 0, end: 1, speaker: nil, speakerSource: .system, text: "[BLANK_AUDIO]"),
+            TranscriptSegment(start: 2, end: 3, speaker: nil, speakerSource: .system, text: "The meeting is ready.")
+        ])
+        try store.writeTranscriptArtifacts(sessionID: id, transcript: transcript)
+        #expect(try store.meetingDocument(sessionID: id).segments.map(\.text) == ["The meeting is ready."])
+        #expect(try store.searchMeetings(query: "BLANK_AUDIO").isEmpty)
+        #expect(TranscriptText.containsSpeech("We saw [BLANK_AUDIO] in the log."))
+        #expect(!TranscriptText.containsSpeech(" [silence] "))
+    }
+
     @Test func corruptOldTranscriptDoesNotStopTheService() throws {
         let (store, config, id) = try fixture()
         defer { try? FileManager.default.removeItem(atPath: config.storageRoot) }
