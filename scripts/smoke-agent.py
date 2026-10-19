@@ -95,7 +95,23 @@ with tempfile.TemporaryDirectory(prefix='memoir-smoke-') as temporary:
         text=' '.join(segment['text'] for segment in transcript['segments'])
         assert 'meeting' in text.lower(), 'Synthetic speech not recognized'
         assert '<|' not in text, 'Whisper control tokens leaked into transcript'
+        meeting=request(f'/v1/meetings/{session}')
+        assert meeting['meeting']['status']=='completed' and meeting['segments']
+        assert all(s['speaker']=='Others' for s in meeting['segments'])
+        assert request('/v1/meetings/search','POST',dict(query='meeting',offset=0,limit=100))[0]['id']==session
+        try:
+            request(f'/v1/meetings/{session}', authenticated=False)
+            raise AssertionError('Unauthenticated transcript access accepted')
+        except urllib.error.HTTPError as error: assert error.code==401
+        try:
+            request('/v1/meetings/search','POST',dict(query='meeting',offset='invalid',limit=100))
+            raise AssertionError('Malformed search accepted')
+        except urllib.error.HTTPError as error: assert error.code==400
+        if os.environ.get('MEMOIR_RECORDER_REPO'):
+            environment=dict(os.environ, MEMOIR_SMOKE_URL=base, MEMOIR_SMOKE_TOKEN=token, MEMOIR_SMOKE_SESSION=session)
+            subprocess.run(['swift','test','--filter','MeetingLibraryLiveTests'],cwd=os.environ['MEMOIR_RECORDER_REPO'],env=environment,check=True)
         print('PASS: actual HTTP authentication, parser survival, path validation, upload checksums, WhisperKit transcription and JSON/TXT/SRT artifacts.')
+        print('PASS: authenticated meeting library, full-text search, transcript download and malformed search rejection.')
         print('Synthetic transcript:', text)
     except Exception:
         print((root/'agent.log').read_text()[-6000:], file=sys.stderr)

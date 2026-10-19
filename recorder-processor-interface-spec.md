@@ -919,3 +919,24 @@ Not part of v1, but this contract leaves room for:
 - remote retry or delete endpoints
 
 These should be introduced under a later API version rather than changing v1 semantics.
+
+## Meeting library extension — Memoir 1.2.0
+
+These routes use the same bearer token and `X-Memoir-API-Version: 1` header as upload routes. The original session/upload contract is unchanged. New library DTOs use camelCase JSON field names.
+
+| Method | Route | Request / result |
+| --- | --- | --- |
+| GET | `/v1/meetings` | First 100 meeting summaries, newest recording first |
+| POST | `/v1/meetings/search` | `{ "query": "budget", "offset": 0, "limit": 100 }`; summaries, including matching transcript excerpts |
+| GET | `/v1/meetings/{uuid}` | `{ "meeting": summary, "segments": [...] }` |
+| POST | `/v1/meetings/{uuid}/title` | `{ "title": "Planning", "expectedRevision": 1 }`; updated document |
+| POST | `/v1/meetings/{uuid}/speaker` | `{ "speakerID": "track:mic", "name": "Alex", "expectedRevision": 1 }`; updated document |
+| POST | `/v1/meetings/{uuid}/retry` | Retry a failed transcription; returns 202 with `{ "status": "queued" }` |
+
+Summary fields: `id`, `title`, `startedAt`, `endedAt`, `status`, `updatedAt`, `transcriptAvailable`, optional `language`, optional `durationSeconds`, optional `excerpt`, optional `error`, and integer `revision`. Segment fields: stable `id`, `start`/`end` in seconds, stable `speakerID`, `speaker`, and `text`.
+
+Search uses all provided words, with prefix matching and Unicode/diacritic folding. Punctuation is treated as separators; user input is not interpreted as FTS operators. A page contains at most 100 records. Existing transcript files are indexed on upgrade. No audio is served by the library API.
+
+Meeting title edits are presentation metadata and preserve the original upload metadata/idempotency contract. Speaker edits update the canonical transcript and text/SRT artifacts and refresh search. Stale edits return HTTP 409 with `meeting_conflict`; active-job conflicts return `session_busy`. UUID/path validation and authentication apply to every transcript route.
+
+Without diarization, `track:mic` means the local microphone (Me), and `track:system` means the combined remote/system audio (Others). Naming that source changes its label throughout the transcript; it does not perform individual speaker separation. Other stable speaker IDs preserve diarization clusters or existing speaker identity.

@@ -4,7 +4,7 @@ import Darwin
 public final class SessionStore: @unchecked Sendable {
     private let config: AppConfig
     private let fileManager = FileManager.default
-    private let database: SQLiteDatabase
+    let database: SQLiteDatabase
 
     public init(config: AppConfig) throws {
         self.config = config
@@ -13,6 +13,7 @@ public final class SessionStore: @unchecked Sendable {
         try fileManager.createDirectory(at: ProcessorPaths.sessionsDirectory(for: config), withIntermediateDirectories: true)
         database = try SQLiteDatabase(path: ProcessorPaths.databaseURL(for: config).path)
         try migrate()
+        try migrateMeetingLibrary()
     }
 
     private func migrate() throws {
@@ -177,7 +178,11 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func createSession(_ request: CreateSessionRequest, idempotencyKey: String, baseURL: String) throws -> (CreateSessionResponse, Int) {
-        try database.transaction { try createSessionWithinTransaction(request, idempotencyKey: idempotencyKey, baseURL: baseURL) }
+        let result = try database.transaction { try createSessionWithinTransaction(request, idempotencyKey: idempotencyKey, baseURL: baseURL) }
+        if try database.fetchOne("SELECT session_id FROM meeting_search WHERE session_id=?", bindings: [.text(request.sessionID)]) == nil {
+            try indexMeetingTranscript(sessionID: request.sessionID, transcript: nil)
+        }
+        return result
     }
 
     public func completeSession(sessionID: String, request: CompleteSessionRequest, idempotencyKey: String) throws -> (CompleteSessionResponse, Int) {
@@ -482,6 +487,8 @@ public final class SessionStore: @unchecked Sendable {
         try database.execute("DELETE FROM speaker_profile_embeddings WHERE source_session_id = ?", bindings: [.text(sessionID)])
         try database.execute("DELETE FROM idempotency_records WHERE response_json LIKE ?", bindings: [.text("%" + sessionID + "%")])
         try database.execute("DELETE FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)])
+        try database.execute("DELETE FROM meeting_search WHERE session_id = ?", bindings: [.text(sessionID)])
+        try database.execute("DELETE FROM meeting_documents WHERE session_id = ?", bindings: [.text(sessionID)])
         let sessionDirectory = ProcessorPaths.sessionDirectory(for: config, sessionID: sessionID)
         if fileManager.fileExists(atPath: sessionDirectory.path) {
             try fileManager.removeItem(at: sessionDirectory)
@@ -531,24 +538,27 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func writeTranscriptArtifacts(sessionID: String, transcript: CanonicalTranscript) throws {
-        try validateSessionID(sessionID)
-        let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
-        try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
+        try database.synchronized {
+            try validateSessionID(sessionID)
+            let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
+            try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
 
-        let transcriptURL = processingDirectory.appendingPathComponent("transcript.json")
-        try JSONEncoder.memoir.encode(transcript).write(to: transcriptURL, options: .atomic)
+            let transcriptURL = processingDirectory.appendingPathComponent("transcript.json")
+            try JSONEncoder.memoir.encode(transcript).write(to: transcriptURL, options: .atomic)
 
-        let plainText = transcript.segments.map { segment in
-            let prefix = segment.speaker.map { "[\($0)] " } ?? ""
-            return "\(prefix)\(segment.text)"
-        }.joined(separator: "\n")
-        try plainText.write(to: processingDirectory.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
+            let plainText = transcript.segments.map { segment in
+                let prefix = segment.speaker.map { "[\($0)] " } ?? ""
+                return "\(prefix)\(segment.text)"
+            }.joined(separator: "\n")
+            try plainText.write(to: processingDirectory.appendingPathComponent("transcript.txt"), atomically: true, encoding: .utf8)
 
-        let srt = transcript.segments.enumerated().map { index, segment in
-            let prefix = segment.speaker.map { "[\($0)] " } ?? ""
-            return "\(index + 1)\n\(Self.srtTimestamp(segment.start)) --> \(Self.srtTimestamp(segment.end))\n\(prefix)\(segment.text)\n"
-        }.joined(separator: "\n")
-        try srt.write(to: processingDirectory.appendingPathComponent("transcript.srt"), atomically: true, encoding: .utf8)
+            let srt = transcript.segments.enumerated().map { index, segment in
+                let prefix = segment.speaker.map { "[\($0)] " } ?? ""
+                return "\(index + 1)\n\(Self.srtTimestamp(segment.start)) --> \(Self.srtTimestamp(segment.end))\n\(prefix)\(segment.text)\n"
+            }.joined(separator: "\n")
+            try srt.write(to: processingDirectory.appendingPathComponent("transcript.srt"), atomically: true, encoding: .utf8)
+            try indexMeetingTranscript(sessionID: sessionID, transcript: transcript)
+        }
     }
 
     public func writeDiarizationArtifact(sessionID: String, artifact: DiarizationArtifact) throws {
@@ -909,7 +919,7 @@ public final class SessionStore: @unchecked Sendable {
         }
     }
 
-    private func validateSessionID(_ value: String) throws {
+    func validateSessionID(_ value: String) throws {
         guard UUID(uuidString: value) != nil else {
             throw ProcessorError(code: "invalid_request", message: "session_id must be a UUID.", retryable: false)
         }

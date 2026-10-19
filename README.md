@@ -1,6 +1,9 @@
 # Memoir Processor
 
-A native macOS app and background agent for receiving Memoir recordings and producing local transcripts. Requires macOS 15 or later. The recorder-to-agent boundary is the versioned HTTP/session-file contract. Watched-folder ingestion from the original specification is not implemented.
+The backend for the Memoir meeting app: it accepts recordings, transcribes locally, stores the archive, indexes transcript text and returns finished transcripts to recorder clients. Its window remains an operator console for runtime, queue and service administration. Requires macOS 15 or later.
+
+Version 1.2.0 adds the authenticated meeting library API. Existing transcripts are indexed on upgrade. Clients can browse/search, read timestamped speaker-labelled transcripts and correct meeting or speaker names. Edits use revisions to protect against stale changes from another Mac. No cloud AI, notepad or summaries are added. Watched-folder ingestion from the original specification is not implemented.
+
 
 ## Use
 

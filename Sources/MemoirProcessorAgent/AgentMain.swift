@@ -647,6 +647,37 @@ enum MemoirProcessorAgentMain {
                 return SimpleHTTPServer.jsonResponse(status: 200, value: ["status": "authenticated"])
             }
 
+            if request.method == "GET", request.path == "/v1/meetings" {
+                return SimpleHTTPServer.jsonResponse(status: 200, value: try store.searchMeetings())
+            }
+            if request.method == "POST", request.path == "/v1/meetings/search" {
+                let body = try JSONDecoder.memoir.decode(MeetingSearchRequest.self, from: request.body)
+                return SimpleHTTPServer.jsonResponse(status: 200, value: try store.searchMeetings(query: body.query, offset: body.offset, limit: body.limit))
+            }
+            if request.path.hasPrefix("/v1/meetings/") {
+                let parts = request.path.split(separator: "/")
+                if request.method == "GET", parts.count == 3 {
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: try store.meetingDocument(sessionID: String(parts[2])))
+                }
+                if request.method == "POST", parts.count == 4, parts[3] == "title" {
+                    let body = try JSONDecoder.memoir.decode(MeetingTitleRequest.self, from: request.body)
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: try store.renameMeeting(sessionID: String(parts[2]), title: body.title, expectedRevision: body.expectedRevision))
+                }
+                if request.method == "POST", parts.count == 4, parts[3] == "speaker" {
+                    let body = try JSONDecoder.memoir.decode(MeetingSpeakerRequest.self, from: request.body)
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: try store.renameMeetingSpeaker(sessionID: String(parts[2]), speakerID: body.speakerID, name: body.name, expectedRevision: body.expectedRevision))
+                }
+                if request.method == "POST", parts.count == 4, parts[3] == "retry" {
+                    let id = String(parts[2])
+                    guard try store.fetchStatus(sessionID: id).processingState == .failed else {
+                        throw ProcessorError(code: "session_busy", message: "Only a failed transcription can be retried here.", retryable: false)
+                    }
+                    try store.retrySession(sessionID: id)
+                    Task { await queue.kick() }
+                    return SimpleHTTPServer.jsonResponse(status: 202, value: ["status": "queued"])
+                }
+            }
+
             if request.method == "POST", request.path == "/v1/operator/queue/kick" {
                 Task { await queue.kick() }
                 return SimpleHTTPServer.jsonResponse(status: 202, value: ["accepted": true])
@@ -699,6 +730,8 @@ enum MemoirProcessorAgentMain {
             return SimpleHTTPServer.jsonResponse(status: 404, error: ProcessorError(code: "invalid_request", message: "Route not found.", retryable: false))
         } catch let error as ProcessorError {
             return SimpleHTTPServer.jsonResponse(status: status(for: error), error: error)
+        } catch is DecodingError {
+            return SimpleHTTPServer.jsonResponse(status: 400, error: ProcessorError(code: "invalid_request", message: "The request contains invalid JSON fields.", retryable: false))
         } catch {
             return SimpleHTTPServer.jsonResponse(status: 500, error: ProcessorError(code: "internal_error", message: error.localizedDescription, retryable: true))
         }
@@ -737,7 +770,7 @@ enum MemoirProcessorAgentMain {
             return 404
         case "invalid_metadata":
             return 422
-        case "session_conflict", "missing_required_file", "checksum_mismatch", "unexpected_file", "file_conflict":
+        case "session_conflict", "missing_required_file", "checksum_mismatch", "unexpected_file", "file_conflict", "meeting_conflict", "session_busy":
             return 409
         default:
             return 400

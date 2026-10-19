@@ -86,6 +86,10 @@ public final class SQLiteDatabase: @unchecked Sendable {
         }
     }
 
+    func synchronized<T>(_ operation: () throws -> T) rethrows -> T {
+        try queue.withLock(operation)
+    }
+
     private func bind(_ bindings: [SQLiteValue], to statement: OpaquePointer?) throws {
         guard sqlite3_bind_parameter_count(statement) == bindings.count else {
             throw ProcessorError(code: "database_bind_error", message: "SQL parameter count mismatch.", retryable: false)
