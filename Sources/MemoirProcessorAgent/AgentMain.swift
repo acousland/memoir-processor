@@ -158,7 +158,12 @@ actor QueueCoordinator {
                         }
 
                         try store.setWorkerPID(sessionID: sessionID, pid: nil)
-                        let alignedTurns = TranscriptAlignment.align(turns: combinedTurns, streamSync: validation.streamSync)
+                        var alignedTurns = TranscriptAlignment.align(turns: combinedTurns, streamSync: validation.streamSync)
+                        if let zero = validation.metadata.streamSync.flatMap({ Double($0.sessionZeroHostTimeNS) }).map({ $0 / 1e9 }) {
+                            let reconciled = try store.reconcileLiveTurns(sessionID: sessionID, turns: alignedTurns, zeroHostSeconds: zero)
+                            alignedTurns = reconciled.turns
+                            reconciled.mixedClusters.forEach { embeddingsByCluster.removeValue(forKey: $0) }
+                        }
                         let profiles = try store.listSpeakerProfiles()
                         let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
                         let profileEmbeddings = try store.speakerProfileEmbeddings(embeddingSpace: config.diarizationEngine.embeddingSpace)
@@ -168,15 +173,26 @@ actor QueueCoordinator {
                             turns: alignedTurns,
                             embeddingsByCluster: embeddingsByCluster,
                             profilesByID: profilesByID,
-                            profileEmbeddings: profileEmbeddings
+                            profileEmbeddings: profileEmbeddings,
+                            zeroHostSeconds: validation.metadata.streamSync.flatMap { Double($0.sessionZeroHostTimeNS) }.map { $0 / 1e9 }
                         )
                         try store.replaceSessionSpeakers(sessionID: sessionID, speakers: sessionSpeakers)
                         for (clusterID, embeddingResult) in embeddingsByCluster {
                             try store.saveSessionSpeakerEmbedding(sessionID: sessionID, clusterID: clusterID, vector: embeddingResult.embedding, embeddingSpace: config.diarizationEngine.embeddingSpace)
+                            if embeddingResult.durationSeconds >= 2.5,
+                               let speaker = sessionSpeakers.first(where: { $0.clusterID == clusterID }),
+                               let profileID = speaker.matchedProfileID,
+                               let zero = validation.metadata.streamSync.flatMap({ Double($0.sessionZeroHostTimeNS) }).map({ $0 / 1e9 }),
+                               let bridge = try store.liveProfileBridge(sessionID: sessionID,
+                                    turns: alignedTurns.filter { $0.clusterID == clusterID }, zeroHostSeconds: zero),
+                               bridge.confirmed, bridge.profileID == profileID {
+                                try store.saveVoiceSample(profileID: profileID, sessionID: sessionID, clusterID: clusterID,
+                                    vector: embeddingResult.embedding, quality: embeddingResult.durationSeconds, space: config.diarizationEngine.embeddingSpace)
+                            }
                         }
 
                         let speakerByCluster = Dictionary(uniqueKeysWithValues: sessionSpeakers.map { ($0.clusterID, $0) })
-                        mergedSegments = applySpeakers(to: mergedSegments, turns: alignedTurns, speakersByCluster: speakerByCluster)
+                        mergedSegments = TranscriptSpeakerAlignment.apply(to: mergedSegments, turns: alignedTurns, speakersByCluster: speakerByCluster)
                         diarizationArtifact = DiarizationArtifact(
                             sessionID: sessionID,
                             runtime: systemDiarization.runtime,
@@ -281,7 +297,8 @@ actor QueueCoordinator {
         turns: [DiarizationTurn],
         embeddingsByCluster: [String: SpeakerEmbeddingResult],
         profilesByID: [String: SpeakerProfile],
-        profileEmbeddings: [String: [[Double]]]
+        profileEmbeddings: [String: [[Double]]],
+        zeroHostSeconds: Double?
     ) throws -> [SessionSpeaker] {
         let groupedTurns = Dictionary(grouping: turns, by: \.clusterID)
         let sortedClusters = groupedTurns.keys.sorted()
@@ -292,7 +309,7 @@ actor QueueCoordinator {
             let clusterTurns = groupedTurns[clusterID] ?? []
             let duration = clusterTurns.reduce(0.0) { $0 + max(0, $1.end - $1.start) }
             let sourceTrack = clusterTurns.first?.sourceTrack ?? .unknown
-            let match = embeddingsByCluster[clusterID].map {
+            var match = embeddingsByCluster[clusterID].map {
                 SpeakerMatching.bestMatch(
                     embedding: $0.embedding,
                     profileEmbeddings: profileEmbeddings,
@@ -301,8 +318,12 @@ actor QueueCoordinator {
                 )
             } ?? SpeakerMatchDecision(profileID: nil, profileName: nil, confidence: nil, assignmentState: .anonymous)
 
-            let label = match.profileName ?? "Speaker \(anonymousIndex)"
-            if match.profileName == nil {
+            if let zeroHostSeconds, let bridge = try store.liveProfileBridge(sessionID: sessionID, turns: clusterTurns, zeroHostSeconds: zeroHostSeconds) {
+                match = SpeakerMatchDecision(profileID: bridge.profileID, profileName: bridge.name,
+                    confidence: bridge.confirmed ? 1 : bridge.confidence, assignmentState: .confirmed)
+            }
+            let label = match.assignmentState == .suggested ? "Speaker \(anonymousIndex)" : match.profileName ?? "Speaker \(anonymousIndex)"
+            if match.profileName == nil || match.assignmentState == .suggested {
                 anonymousIndex += 1
             }
             speakers.append(
@@ -329,45 +350,7 @@ actor QueueCoordinator {
         return turn?.representativeText
     }
 
-    private func applySpeakers(
-        to segments: [TranscriptSegment],
-        turns: [DiarizationTurn],
-        speakersByCluster: [String: SessionSpeaker]
-    ) -> [TranscriptSegment] {
-        segments.map { segment in
-            let matchingTurn = turns
-                .filter { turn in
-                    if let source = segment.speakerSource, source != turn.sourceTrack {
-                        return false
-                    }
-                    return overlapDuration(startA: segment.start, endA: segment.end, startB: turn.start, endB: turn.end) > 0
-                }
-                .max { left, right in
-                    overlapDuration(startA: segment.start, endA: segment.end, startB: left.start, endB: left.end)
-                    < overlapDuration(startA: segment.start, endA: segment.end, startB: right.start, endB: right.end)
-                }
 
-            guard let matchingTurn, let sessionSpeaker = speakersByCluster[matchingTurn.clusterID] else {
-                return segment
-            }
-
-            return TranscriptSegment(
-                id: segment.id,
-                start: segment.start,
-                end: segment.end,
-                speaker: sessionSpeaker.displayLabel,
-                speakerID: sessionSpeaker.matchedProfileID ?? matchingTurn.clusterID,
-                clusterID: matchingTurn.clusterID,
-                speakerSource: matchingTurn.sourceTrack,
-                speakerConfidence: sessionSpeaker.matchConfidence,
-                text: segment.text
-            )
-        }
-    }
-
-    private func overlapDuration(startA: Double, endA: Double, startB: Double, endB: Double) -> Double {
-        max(0, min(endA, endB) - max(startA, startB))
-    }
 }
 
 typealias HTTPRequest = DecodedHTTPRequest
@@ -629,6 +612,13 @@ enum MemoirProcessorAgentMain {
             config: config,
             selectionConfigURL: selectionConfigURL
         )
+        Task.detached(priority: .utility) {
+            for sample in (try? store.pendingLiveVoiceSamples()) ?? [] {
+                if (try? store.speakerProfileEmbeddings(embeddingSpace: LiveSpeakerConstants.embeddingSpace)[sample.profileID]) != nil { continue }
+                try? LiveVoiceEnrollment.enrol(store: store, config: config, sessionID: sample.sessionID, clusterID: sample.clusterID)
+            }
+        }
+        let live = LiveSpeakerCoordinator(store: store, config: config, selectionConfigURL: selectionConfigURL)
         Task {
             await queue.startRecovery()
             while !Task.isCancelled {
@@ -642,7 +632,7 @@ enum MemoirProcessorAgentMain {
             if method == "GET" && path == "/health" { return }
             try authorize(headers: headers, config: config)
         }) { request in
-            await handle(request: request, config: config, store: store, queue: queue)
+            await handle(request: request, config: config, store: store, queue: queue, live: live)
         }
         withExtendedLifetime(proxyManager) {
             server.start()
@@ -657,7 +647,7 @@ enum MemoirProcessorAgentMain {
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/diarize.py")
     }
 
-    static func handle(request: HTTPRequest, config: AppConfig, store: SessionStore, queue: QueueCoordinator) async -> HTTPResponse {
+    static func handle(request: HTTPRequest, config: AppConfig, store: SessionStore, queue: QueueCoordinator, live: LiveSpeakerCoordinator) async -> HTTPResponse {
         do {
             if request.method == "GET", request.path == "/health" {
                 return SimpleHTTPServer.jsonResponse(status: 200, value: ["status": "ok", "service": "memoir-processor", "api_version": "1"])
@@ -666,6 +656,31 @@ enum MemoirProcessorAgentMain {
             try authorize(headers: request.headers, config: config)
             if request.method == "GET", request.path == "/v1/connection" {
                 return SimpleHTTPServer.jsonResponse(status: 200, value: ["status": "authenticated"])
+            }
+
+            if request.path.hasPrefix("/v1/live/") {
+                let parts = request.path.split(separator: "/")
+                guard parts.count >= 3 else { throw ProcessorError(code: "invalid_request", message: "Invalid live path.", retryable: false) }
+                let id = String(parts[2])
+                if parts.count == 3, request.method == "POST" {
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: try await live.begin(id))
+                }
+                if parts.count == 3, request.method == "GET" {
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: try store.liveSnapshot(id))
+                }
+                if parts.count == 4, request.method == "POST" {
+                    switch parts[3] {
+                    case "chunks":
+                        let chunk = try JSONDecoder.memoir.decode(LiveAudioChunk.self, from: request.body)
+                        return SimpleHTTPServer.jsonResponse(status: 200, value: try await live.process(id, chunk: chunk))
+                    case "speaker":
+                        let name = try JSONDecoder.memoir.decode(LiveNameRequest.self, from: request.body)
+                        return SimpleHTTPServer.jsonResponse(status: 200, value: try store.nameLiveSpeaker(id, request: name))
+                    case "close":
+                        return SimpleHTTPServer.jsonResponse(status: 200, value: try store.closeLiveSession(id))
+                    default: break
+                    }
+                }
             }
 
             if request.method == "GET", request.path == "/v1/meetings" {
@@ -686,7 +701,13 @@ enum MemoirProcessorAgentMain {
                 }
                 if request.method == "POST", parts.count == 4, parts[3] == "speaker" {
                     let body = try JSONDecoder.memoir.decode(MeetingSpeakerRequest.self, from: request.body)
-                    return SimpleHTTPServer.jsonResponse(status: 200, value: try store.renameMeetingSpeaker(sessionID: String(parts[2]), speakerID: body.speakerID, name: body.name, expectedRevision: body.expectedRevision))
+                    let id = String(parts[2])
+                    let document = try store.renameMeetingSpeaker(sessionID: id, speakerID: body.speakerID, name: body.name, expectedRevision: body.expectedRevision)
+                    Task.detached(priority: .utility) {
+                        do { try LiveVoiceEnrollment.enrol(store: store, config: config, sessionID: id, clusterID: body.speakerID) }
+                        catch { try? store.appendLog(sessionID: id, line: "Live voice enrolment pending: \(error.localizedDescription)") }
+                    }
+                    return SimpleHTTPServer.jsonResponse(status: 200, value: document)
                 }
                 if request.method == "POST", parts.count == 4, parts[3] == "retry" {
                     let id = String(parts[2])

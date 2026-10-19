@@ -23,6 +23,36 @@ enum DiarizationWorkerMain {
             // Core ML may use CPU for unsupported operations; Apple chooses the
             // placement of neural-network operations across CPU and Neural Engine.
             configuration.computeUnits = .cpuAndNeuralEngine
+            if arguments.contains("--live-chunk") || arguments.contains("--voice-sample") {
+                let models = try await DiarizerModels.load(from: directory, configuration: configuration)
+                let manager = DiarizerManager(config: DiarizerConfig(debugMode: true, chunkDuration: 10))
+                manager.initialize(models: models)
+                // Conservative session clustering. Unknown voices remain distinct
+                // until sufficient speech supports merging them.
+                manager.speakerManager = SpeakerManager(speakerThreshold: 0.12, embeddingThreshold: 0.08,
+                    minSpeechDuration: 0.8, minEmbeddingUpdateDuration: 1.5)
+                if arguments.contains("--voice-sample") {
+                    let samples = try AudioConverter().resampleAudioFile(URL(fileURLWithPath: try value("--audio")))
+                    let vector = try manager.extractSpeakerEmbedding(from: samples)
+                    output.write(try JSONSerialization.data(withJSONObject: ["embedding": vector.map(Double.init)]))
+                    return
+                }
+                let seeds = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: try value("--seeds")))) as? [[String: Any]] ?? []
+                manager.initializeKnownSpeakers(seeds.compactMap { seed in
+                    guard let id = seed["id"] as? String, let vector = seed["embedding"] as? [Double], vector.count == 256 else { return nil }
+                    return Speaker(id: id, currentEmbedding: vector.map(Float.init), duration: Float(seed["duration"] as? Double ?? 0))
+                })
+                let samples = try AudioConverter().resampleAudioFile(URL(fileURLWithPath: try value("--audio")))
+                let result = try manager.performCompleteDiarization(samples)
+                let turns: [[String: Any]] = result.segments.map {
+                    ["speakerID": $0.speakerId, "start": Double($0.startTimeSeconds), "end": Double($0.endTimeSeconds), "quality": Double($0.qualityScore)]
+                }
+                let speakers: [[String: Any]] = manager.speakerManager.getSpeakerList().map {
+                    ["id": $0.id, "embedding": $0.currentEmbedding.map(Double.init), "duration": Double($0.duration)]
+                }
+                output.write(try JSONSerialization.data(withJSONObject: ["turns": turns, "speakers": speakers], options: [.sortedKeys]))
+                return
+            }
             let models = try await OfflineDiarizerModels.load(from: directory, configuration: configuration)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try Data("{\"version\":\"0.17.7\"}".utf8).write(to: directory.appendingPathComponent("ready.json"), options: .atomic)

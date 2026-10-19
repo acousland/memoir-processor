@@ -14,6 +14,7 @@ public final class SessionStore: @unchecked Sendable {
         database = try SQLiteDatabase(path: ProcessorPaths.databaseURL(for: config).path)
         try migrate()
         try migrateMeetingLibrary()
+        try migrateLiveSpeakers()
     }
 
     private func migrate() throws {
@@ -486,6 +487,9 @@ public final class SessionStore: @unchecked Sendable {
         let active = try fetchStatus(sessionID: sessionID).processingState
         guard ![ProcessingState.validating, .transcribing, .diarizing, .writingArtifacts].contains(where: { $0 == active }) else {
             throw ProcessorError(code: "session_busy", message: "Stop the session and wait for processing to finish before removing it.", retryable: true)
+        }
+        for table in ["live_turns", "live_chunks", "live_speakers", "live_sessions"] {
+            try database.execute("DELETE FROM \(table) WHERE session_id = ?", bindings: [.text(sessionID)])
         }
         try database.execute("DELETE FROM session_warnings WHERE session_id = ?", bindings: [.text(sessionID)])
         try database.execute("DELETE FROM session_speakers WHERE session_id = ?", bindings: [.text(sessionID)])
@@ -1027,7 +1031,7 @@ public final class SessionStore: @unchecked Sendable {
                         clusterID: clusterID,
                         speakerSource: .manual,
                         speakerConfidence: 1.0,
-                        text: segment.text
+                        text: segment.text, words: segment.words
                     )
                 }
             )

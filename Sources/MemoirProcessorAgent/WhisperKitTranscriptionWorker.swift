@@ -44,7 +44,8 @@ final class WhisperKitTranscriptionWorker: @unchecked Sendable {
                 speakerID: nil,
                 speakerSource: nil,
                 speakerConfidence: nil,
-                text: text
+                text: text,
+                words: segment.words?.map { TranscriptWord(start: Double($0.start), end: Double($0.end), text: $0.word) }
             )
         }
         let language = results.first?.language ?? languageHint ?? "unknown"

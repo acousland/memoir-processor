@@ -24,6 +24,21 @@ Speaker identification is optional. Choose **FluidAudio · Core ML** or **Pyanno
 
 Voice samples are tagged with their engine/model family. Names and old samples remain stored, while automatic matches only compare compatible samples. When using the other engine, identify a person again to enrol a voice sample for that engine. The processing log and diarization artifact identify the engine/backend used. **Retry** on an existing meeting runs the saved engine and replaces its speaker clusters; original audio remains available. Model downloads need internet access; audio processing stays local. A diarization failure produces a visible warning while retaining the basic transcript.
 
+## Live speakers
+
+With Recorder 1.4.0, enable automatic upload and **Show live speakers during recording**. Keep diarization enabled on the Processor. Open the Recorder menu-bar popover during capture: voice avatars appear after a few seconds of speech, glow for recently detected speech, and can be named or linked to an existing person. The glow is delayed and provisional; the finished transcript still runs the selected full diarization engine after stopping.
+
+The live view uses FluidAudio's online speaker models regardless of the final engine. They download automatically on first use. Three-second audio previews travel only to the paired, authenticated Processor and are removed after processing. Preview backlog is bounded; delays or failures leave the full local recording intact. Turning off live speakers or automatic upload disables previews.
+
+Explicitly confirmed names create local voice embeddings. Future meetings reuse a name only when similarity and separation from other people are strong enough. Guessed identities do not train profiles. Names carry across the live/final engine boundary through aligned speech intervals; incompatible model embeddings are never compared. Existing explicitly named voices are prepared for live recognition from clean source audio where available. Profiles and their samples can be managed from People.
+
+An isolated synthetic integration check covers two live voices, naming, silence, recognition in a later meeting, and the final transcript. It never records a microphone or writes to the production meeting archive:
+
+```sh
+python3 scripts/smoke-live-speakers.py /path/to/MemoirProcessorAgent --engine fluidaudio
+python3 scripts/smoke-live-speakers.py /path/to/MemoirProcessorAgent --engine pyannote
+```
+
 ## Develop and test
 
 ```sh

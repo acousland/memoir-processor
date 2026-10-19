@@ -45,6 +45,7 @@ final class AppViewModel: ObservableObject {
         guard let store else { return }
         do {
             sessions = try store.listSessions()
+            speakerProfiles = try store.listSpeakerProfiles()
             apply(serviceState: serviceManager.serviceState())
             try loadSelectedSessionContext()
         } catch { message = error.localizedDescription }
@@ -239,6 +240,8 @@ final class AppViewModel: ObservableObject {
             if let embedding = try store.sessionSpeakerEmbedding(sessionID: selectedSessionID, clusterID: clusterID) {
                 let quality = min(1.0, max(0.25, speaker.speakingDurationSeconds / 10.0))
                 try store.saveEmbedding(profileID: profileID, sessionID: selectedSessionID, clusterID: clusterID, vector: embedding, qualityScore: quality)
+                let snapshot = config
+                Task.detached(priority: .utility) { try? LiveVoiceEnrollment.enrol(store: store, config: snapshot, sessionID: selectedSessionID, clusterID: clusterID) }
             }
             try store.assignSessionSpeaker(sessionID: selectedSessionID, clusterID: clusterID, profileID: profileID, profileName: profile.name)
             try loadSelectedSessionContext()

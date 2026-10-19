@@ -166,14 +166,21 @@ extension SessionStore {
             guard current.meeting.status == "completed", let transcript = try loadMeetingTranscript(sessionID: sessionID) else {
                 throw ProcessorError(code: "session_busy", message: "Wait for transcription to finish before naming speakers.", retryable: true)
             }
+            let vector = try sessionSpeakerEmbedding(sessionID: sessionID, clusterID: speakerID)
+            let profile = try vector.map { _ in try resolveNamedProfile(name: name, profileID: nil) }
             let updated = CanonicalTranscript(sessionID: transcript.sessionID, sourceFiles: transcript.sourceFiles, transcription: transcript.transcription, segments: transcript.segments.map { segment in
                 guard Self.meetingSegment(segment).speakerID == speakerID else { return segment }
                 return TranscriptSegment(id: segment.id, start: segment.start, end: segment.end, speaker: name,
-                    speakerID: segment.speakerID ?? speakerID, clusterID: segment.clusterID,
-                    speakerSource: segment.speakerSource, speakerConfidence: segment.speakerConfidence, text: segment.text)
+                    speakerID: profile?.id ?? segment.speakerID ?? speakerID, clusterID: segment.clusterID,
+                    speakerSource: segment.speakerSource, speakerConfidence: profile == nil ? segment.speakerConfidence : 1, text: segment.text, words: segment.words)
             })
             try writeTranscriptArtifacts(sessionID: sessionID, transcript: updated)
             try database.execute("UPDATE session_speakers SET display_label=? WHERE session_id=? AND cluster_id=?", bindings: [.text(name), .text(sessionID), .text(speakerID)])
+            if let profile, let vector {
+                try database.execute("UPDATE session_speakers SET matched_profile_id=?,matched_profile_name=?,assignment_state='confirmed',match_confidence=1 WHERE session_id=? AND cluster_id=?", bindings: [.text(profile.id), .text(profile.name), .text(sessionID), .text(speakerID)])
+                let space = try database.fetchOne("SELECT embedding_space FROM session_speakers WHERE session_id=? AND cluster_id=?", bindings: [.text(sessionID), .text(speakerID)])?["embedding_space"]?.stringValue ?? "legacy-pyannote-embedding"
+                try saveVoiceSample(profileID: profile.id, sessionID: sessionID, clusterID: speakerID, vector: vector, quality: 1, space: space)
+            }
             return try meetingDocument(sessionID: sessionID)
         }
     }

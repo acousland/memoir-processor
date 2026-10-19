@@ -96,8 +96,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGNING_ALLOWED: NO
-        MARKETING_VERSION: 1.4.0
-        CURRENT_PROJECT_VERSION: 2026101910
+        MARKETING_VERSION: 1.5.0
+        CURRENT_PROJECT_VERSION: 2026101912
         PRODUCT_NAME: Memoir Processor
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
     postBuildScripts:

@@ -117,7 +117,8 @@ public enum TranscriptAlignment {
                         clusterID: $0.clusterID,
                         speakerSource: source.kind == .system ? .system : .mic,
                         speakerConfidence: $0.speakerConfidence,
-                        text: $0.text
+                        text: $0.text,
+                        words: $0.words?.map { word in TranscriptWord(start: max(0, word.start + shift), end: max(0, word.end + shift), text: word.text) }
                     )
                 }
             )

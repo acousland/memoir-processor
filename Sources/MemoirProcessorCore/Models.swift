@@ -528,6 +528,13 @@ public enum SpeakerSource: String, Codable, CaseIterable, Sendable {
     case unknown
 }
 
+public struct TranscriptWord: Codable, Sendable {
+    public let start: Double
+    public let end: Double
+    public let text: String
+    public init(start: Double, end: Double, text: String) { self.start = start; self.end = end; self.text = text }
+}
+
 public struct TranscriptSegment: Codable, Sendable, Identifiable {
     public let id: UUID
     public let start: Double
@@ -538,6 +545,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
     public let speakerSource: SpeakerSource?
     public let speakerConfidence: Double?
     public let text: String
+    public let words: [TranscriptWord]?
 
     public init(
         id: UUID = UUID(),
@@ -548,7 +556,8 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         clusterID: String? = nil,
         speakerSource: SpeakerSource? = nil,
         speakerConfidence: Double? = nil,
-        text: String
+        text: String,
+        words: [TranscriptWord]? = nil
     ) {
         self.id = id
         self.start = start
@@ -559,6 +568,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         self.speakerSource = speakerSource
         self.speakerConfidence = speakerConfidence
         self.text = text
+        self.words = words
     }
 
     enum CodingKeys: String, CodingKey {
@@ -571,6 +581,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         case speakerSource = "speaker_source"
         case speakerConfidence = "speaker_confidence"
         case text
+        case words
     }
 
     public init(from decoder: Decoder) throws {
@@ -584,6 +595,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         speakerSource = try container.decodeIfPresent(SpeakerSource.self, forKey: .speakerSource)
         speakerConfidence = try container.decodeIfPresent(Double.self, forKey: .speakerConfidence)
         text = try container.decode(String.self, forKey: .text)
+        words = try container.decodeIfPresent([TranscriptWord].self, forKey: .words)
     }
 }
 

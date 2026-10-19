@@ -1,9 +1,9 @@
-# Memoir Processor 1.4.0 — Choose your speaker engine
+# Memoir Processor 1.5.0 — Live voices
 
-- Switch between **FluidAudio · Core ML** and **Pyannote Community-1 · GPU** in Settings. Save Configuration applies the choice to the next meeting without interrupting active processing.
-- FluidAudio uses the offline VBx pipeline on Core ML with CPU/Neural Engine compute. Its models download without a token or Python installation. Older configurations start with FluidAudio on upgrade.
-- Upgrades Pyannote from legacy 3.1 to Community-1, including exclusive speaker turns for transcript alignment and built-in voice embeddings. Uses a separate Python 3.11 runtime, MPS acceleration and optional CPU inference fallback. Hugging Face model approval and token access are required; telemetry is disabled.
-- Adds engine-specific model preparation controls and runtime status. Logs and artifacts identify the engine/backend used.
-- Keeps voice samples separate by model family to prevent incompatible samples from producing false speaker matches. Names and existing samples are preserved. Reprocessing replaces old speaker clusters cleanly.
+- Detects speakers during recording from short authenticated audio previews. FluidAudio handles the live view independently of the chosen final diarization engine.
+- Remembers people explicitly named in the Recorder, using voice embeddings stored locally. Conservative matching leaves uncertain voices unnamed; automatic guesses do not train the voice bank.
+- Carries live speaker names into finished FluidAudio and Pyannote transcripts. Splits merged final clusters where confirmed live identities provide evidence, and excludes mixed voice embeddings from learning.
+- Preserves word timings to assign speaker changes within a transcription segment. Naming a person in a finished transcript also prepares a compatible live voice sample when a clean audio excerpt is available.
+- Keeps preview processing bounded and separate from full recording uploads. Temporary preview audio is removed after processing. Live models download automatically on first use.
 
-Compatible with Memoir Recorder 1.2.0 or later. Audio processing remains local. Requires macOS 15 or later.
+Pair with Memoir Recorder 1.4.0 for the live speaker interface. Existing Recorder versions remain compatible with finished transcription. Requires macOS 15 or later.
