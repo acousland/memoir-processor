@@ -2,7 +2,9 @@
 
 The backend for the Memoir meeting app: it accepts recordings, transcribes locally, stores the archive, indexes transcript text and returns finished transcripts to recorder clients. Its window remains an operator console for runtime, queue and service administration. Requires macOS 15 or later.
 
-Version 1.2.0 adds the authenticated meeting library API. Existing transcripts are indexed on upgrade. Clients can browse/search, read timestamped speaker-labelled transcripts and correct meeting or speaker names. Edits use revisions to protect against stale changes from another Mac. No cloud AI, notepad or summaries are added. Watched-folder ingestion from the original specification is not implemented.
+Version 1.3.0 brings the recorder’s **Thread** visual design to the operator console: rose accents, serif headings, month-grouped conversations, clear progress states and separate Overview, Speakers and Processing log tabs. Configuration, runtime and people screens share the same light/dark palette. Pairing tokens are hidden until revealed; window controls remain available at smaller sizes.
+
+Version 1.2.0 introduced the authenticated meeting library API. Existing transcripts are indexed on upgrade. Clients can browse/search, read timestamped speaker-labelled transcripts and correct meeting or speaker names. Edits use revisions to protect against stale changes from another Mac. No cloud AI, notepad or summaries are added. Watched-folder ingestion from the original specification is not implemented.
 
 
 ## Use

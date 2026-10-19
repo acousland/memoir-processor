@@ -12,9 +12,14 @@ struct MemoirProcessorApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(viewModel: viewModel)
-                .frame(minWidth: 1000, minHeight: 640)
-        }.commands {
+            ContentView(viewModel: viewModel, updater: updater)
+                .frame(minWidth: 760, minHeight: 440)
+                .containerBackground(ThreadTheme.paper, for: .window)
+        }
+        .defaultSize(width: 1080, height: 680)
+        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unifiedCompact)
+        .commands {
             CommandGroup(after: .appInfo) { CheckForUpdatesView(updater: updater) }
         }
     }

@@ -43,6 +43,7 @@ final class AppViewModel: ObservableObject {
         guard let store else { return }
         do {
             sessions = try store.listSessions()
+            apply(serviceState: serviceManager.serviceState())
             try loadSelectedSessionContext()
         } catch { message = error.localizedDescription }
     }
@@ -52,6 +53,7 @@ final class AppViewModel: ObservableObject {
             config = try configStore.load()
             store = try SessionStore(config: config)
             sessions = try store?.listSessions() ?? []
+            if selectedSessionID == nil { selectedSessionID = sessions.first?.id }
             speakerProfiles = try store?.listSpeakerProfiles() ?? []
             huggingFaceToken = runtimeDependencyManager.huggingFaceToken() ?? ""
             let configurationForStatus = config
