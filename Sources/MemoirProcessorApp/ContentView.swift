@@ -383,6 +383,16 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Hugging Face Token")
                     .font(.subheadline.weight(.semibold))
+                Text("Enable public gated repository read access for the token, then accept all three model conditions before the first speaker-identification run.")
+                    .font(.caption)
+                    .foregroundStyle(ThreadTheme.muted)
+                HStack(spacing: 12) {
+                    Link("Token permissions", destination: URL(string: "https://huggingface.co/settings/tokens")!)
+                    Link("Diarization", destination: URL(string: "https://huggingface.co/pyannote/speaker-diarization-3.1")!)
+                    Link("Segmentation", destination: URL(string: "https://huggingface.co/pyannote/segmentation-3.0")!)
+                    Link("Embedding", destination: URL(string: "https://huggingface.co/pyannote/embedding")!)
+                }
+                .font(.caption)
                 SecureField("Required for pyannote model access", text: $viewModel.huggingFaceToken)
                 HStack {
                     Button("Save Token") {

@@ -17,7 +17,7 @@ Without Tailscale HTTPS provisioning, the processor uses the certificate and key
 
 Prepare the WhisperKit model from Runtime. Initial preparation requires a download; transcription thereafter runs locally. Start with diarization disabled. Completed sessions contain JSON, plain-text and SRT transcripts. Refresh updates the session list; artifacts can be opened from the session view. Audio, metadata, outputs and job logs remain together.
 
-Speaker identification is optional. Install a Python 3.11 interpreter, then use **Install Diarization Runtime** to create an isolated environment in application storage. Dependencies are specified in `worker/requirements.txt` and `worker/requirements-lock.txt`. Provide a Hugging Face token and accept access conditions for the legacy `pyannote/speaker-diarization-3.1` and `pyannote/embedding` models. Model authorization and diarization quality must be verified with representative audio. A diarization failure produces a visible warning while retaining the basic transcript.
+Speaker identification is optional. Install a Python 3.11 interpreter, then use **Install Diarization Runtime** to create an isolated environment in application storage. Dependencies are specified in `worker/requirements.txt` and `worker/requirements-lock.txt`. Provide a Hugging Face token and accept access conditions for the legacy `pyannote/speaker-diarization-3.1`, `pyannote/segmentation-3.0` and `pyannote/embedding` models. Fine-grained tokens must enable **Read access to contents of all public gated repos you can access**. Models download once and inference runs locally, using the Apple GPU through PyTorch MPS when available. CPU fallback applies only to inference failures; model access errors identify the required permissions. The processing log records the backend actually used (`mps`, `cpu`, or `mps+cpu` for GPU diarization with CPU voice embeddings). Model authorization and diarization quality must be verified with representative audio. A diarization failure produces a visible warning while retaining the basic transcript.
 
 ## Develop and test
 
@@ -29,6 +29,12 @@ scripts/package_app.sh
 ```
 
 The GUI scheme runs the app and includes core tests. Test coverage includes alignment, echo deduplication, Python JSON decoding, restart recovery, invalid session paths, permanent errors, bounded HTTP framing and subprocess pipe draining. The package lock records WhisperKit and Sparkle dependencies.
+
+A GPU diarization smoke check synthesizes two voices, reads the saved Keychain token, and runs the actual models with CPU fallback disabled. It uses temporary files and never changes the meeting archive:
+
+```sh
+python3 scripts/smoke-diarization.py
+```
 
 An optional end-to-end smoke check synthesizes speech, launches an isolated agent, checks HTTP errors/authentication/uploads, runs WhisperKit, and validates transcript artifacts. It downloads a base model and never records a microphone:
 

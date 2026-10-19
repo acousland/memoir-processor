@@ -121,6 +121,7 @@ actor QueueCoordinator {
                             sessionID: sessionID,
                             line: String(format: "System diarization completed in %.2fs using %@ (%@).", Date().timeIntervalSince(systemDiarizationStart), systemDiarization.runtime, systemDiarization.backend)
                         )
+                        var diarizationBackends = Set(systemDiarization.backend.split(separator: "+").map(String.init))
                         combinedTurns.append(contentsOf: systemDiarization.turns)
                         systemDiarization.embeddings.forEach { embeddingsByCluster[$0.clusterID] = $0 }
 
@@ -138,6 +139,7 @@ actor QueueCoordinator {
                                 sessionID: sessionID,
                                 line: String(format: "Microphone diarization completed in %.2fs using %@ (%@).", Date().timeIntervalSince(micDiarizationStart), micDiarization.runtime, micDiarization.backend)
                             )
+                            diarizationBackends.formUnion(micDiarization.backend.split(separator: "+").map(String.init))
                             combinedTurns.append(contentsOf: micDiarization.turns)
                             micDiarization.embeddings.forEach { embeddingsByCluster[$0.clusterID] = $0 }
                         }
@@ -165,7 +167,7 @@ actor QueueCoordinator {
                         diarizationArtifact = DiarizationArtifact(
                             sessionID: sessionID,
                             runtime: "pyannote.audio",
-                            backend: alignedTurns.first?.sourceTrack == .mic ? "mixed" : (systemDiarization.backend),
+                            backend: diarizationBackends.sorted(by: >).joined(separator: "+"),
                             turns: alignedTurns.map { turn in
                                 let speaker = speakerByCluster[turn.clusterID]
                                 return DiarizationTurn(

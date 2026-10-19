@@ -16,5 +16,6 @@ jobs:
           xcode-version: latest-stable
       - run: brew install xcodegen
       - run: /usr/bin/python3 -m unittest discover -s Tests/ProxyTests -v
+      - run: /usr/bin/python3 -m unittest discover -s Tests/WorkerTests -v
       - run: xcodegen generate
       - run: xcodebuild -project MemoirProcessor.xcodeproj -scheme MemoirProcessorApp -destination 'platform=macOS' test

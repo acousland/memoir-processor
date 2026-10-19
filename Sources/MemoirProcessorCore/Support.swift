@@ -278,7 +278,7 @@ public struct RuntimeDependencyStatus: Sendable {
         if !diarizationInstalled {
             return "Missing"
         }
-        return mpsAvailable ? "MPS" : "CPU fallback"
+        return "Installed (model access required)"
     }
 
     public init(

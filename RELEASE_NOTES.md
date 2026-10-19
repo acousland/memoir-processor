@@ -1,10 +1,9 @@
-# Memoir Processor 1.3.0 — Thread
+# Memoir Processor 1.3.1 — GPU diarization repair
 
-- Matches the recorder’s Thread design: rose accents, serif headings, a chronological conversation timeline and paper-like panels in light and dark mode.
-- A quieter two-pane workspace with searchable conversation titles and clear processing states. Overview, Speakers and Processing log tabs keep session controls easy to find.
-- Restyles configuration, service, runtime and people screens. Service status refreshes with the archive; the latest conversation opens automatically.
-- Transcript files have distinct, clearly labelled open controls. Long processing logs show their latest 60,000 characters; the complete log remains in the session folder.
-- Settings masks the pairing token by default, with explicit Reveal and Copy controls. Removing a conversation now asks for confirmation.
-- Smaller minimum window dimensions and scrolling detail screens keep the console usable on smaller displays. Check for Updates is available in the main menu and workspace options.
+- Keeps input audio on CPU while pyannote transfers inference chunks to the Apple GPU (MPS).
+- Moves both the voice-embedding model and its inference device when CPU fallback is required. Disabling fallback prevents silent CPU execution.
+- Separates model setup failures from inference failures. Missing Hugging Face model permissions now explain which token setting and model approval are required, instead of reporting a failed CPU retry.
+- Adds links to all three required model approvals and token permissions in Settings. Runtime installation status is separate from GPU availability.
+- Records the actual combined backend when system and microphone tracks use different devices.
 
-Compatible with Memoir Recorder 1.2.0 or later, including Thread Recorder 1.3.0. The transcription engine, storage format and meeting API are unchanged. Requires macOS 15 or later.
+Compatible with Memoir Recorder 1.2.0 or later. Model downloads require authorized Hugging Face access; recording and transcription remain local.
