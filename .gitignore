@@ -6,3 +6,12 @@ build
 xcuserdata
 *.swp
 
+
+dist/
+!MemoirProcessor.xcodeproj/project.xcworkspace/
+!MemoirProcessor.xcodeproj/project.xcworkspace/xcshareddata/
+!MemoirProcessor.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+!MemoirProcessor.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+__pycache__/
+*.pyc

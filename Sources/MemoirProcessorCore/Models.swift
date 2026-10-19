@@ -508,6 +508,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
     public let end: Double
     public let speaker: String?
     public let speakerID: String?
+    public let clusterID: String?
     public let speakerSource: SpeakerSource?
     public let speakerConfidence: Double?
     public let text: String
@@ -518,6 +519,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         end: Double,
         speaker: String?,
         speakerID: String? = nil,
+        clusterID: String? = nil,
         speakerSource: SpeakerSource? = nil,
         speakerConfidence: Double? = nil,
         text: String
@@ -527,6 +529,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         self.end = end
         self.speaker = speaker
         self.speakerID = speakerID
+        self.clusterID = clusterID
         self.speakerSource = speakerSource
         self.speakerConfidence = speakerConfidence
         self.text = text
@@ -538,6 +541,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         case end
         case speaker
         case speakerID = "speaker_id"
+        case clusterID = "cluster_id"
         case speakerSource = "speaker_source"
         case speakerConfidence = "speaker_confidence"
         case text
@@ -550,6 +554,7 @@ public struct TranscriptSegment: Codable, Sendable, Identifiable {
         end = try container.decode(Double.self, forKey: .end)
         speaker = try container.decodeIfPresent(String.self, forKey: .speaker)
         speakerID = try container.decodeIfPresent(String.self, forKey: .speakerID)
+        clusterID = try container.decodeIfPresent(String.self, forKey: .clusterID)
         speakerSource = try container.decodeIfPresent(SpeakerSource.self, forKey: .speakerSource)
         speakerConfidence = try container.decodeIfPresent(Double.self, forKey: .speakerConfidence)
         text = try container.decode(String.self, forKey: .text)
@@ -600,6 +605,19 @@ public struct DiarizationTurn: Codable, Sendable, Identifiable {
         case matchConfidence = "match_confidence"
         case representativeText = "representative_text"
     }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        clusterID = try c.decode(String.self, forKey: .clusterID)
+        start = try c.decode(Double.self, forKey: .start)
+        end = try c.decode(Double.self, forKey: .end)
+        sourceTrack = try c.decode(SpeakerSource.self, forKey: .sourceTrack)
+        matchedProfileID = try c.decodeIfPresent(String.self, forKey: .matchedProfileID)
+        matchedProfileName = try c.decodeIfPresent(String.self, forKey: .matchedProfileName)
+        matchConfidence = try c.decodeIfPresent(Double.self, forKey: .matchConfidence)
+        representativeText = try c.decodeIfPresent(String.self, forKey: .representativeText)
+    }
+
 }
 
 public struct DiarizationArtifact: Codable, Sendable {

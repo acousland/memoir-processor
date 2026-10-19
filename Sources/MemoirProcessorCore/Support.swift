@@ -36,7 +36,7 @@ public enum ProcessorPaths {
     }
 
     public static func sessionDirectory(for config: AppConfig, sessionID: String) -> URL {
-        sessionsDirectory(for: config).appendingPathComponent(sessionID, isDirectory: true)
+        sessionsDirectory(for: config).appendingPathComponent(UUID(uuidString: sessionID) == nil ? "invalid-session" : sessionID, isDirectory: true)
     }
 
     public static func processingDirectory(for config: AppConfig, sessionID: String) -> URL {
@@ -113,13 +113,25 @@ public final class ConfigStore: @unchecked Sendable {
         }
 
         let data = try Data(contentsOf: configURL)
-        return try JSONDecoder.memoir.decode(AppConfig.self, from: data)
+        let decoded = try JSONDecoder.memoir.decode(AppConfig.self, from: data)
+        if decoded.authToken.isEmpty {
+            guard let token = SecretStore.read(account: secretAccount), !token.isEmpty else {
+                throw ProcessorError(code: "configuration_invalid", message: "Processor API token is missing from Keychain.", retryable: false)
+            }
+            return decoded.updating(authToken: token)
+        }
+        try save(decoded)
+        return decoded
     }
+
+    private var secretAccount: String { "processor-api-" + Hashing.sha256Hex(for: Data(configURL.path.utf8)) }
 
     public func save(_ config: AppConfig) throws {
         try fileManager.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder.memoir.encode(config)
+        try SecretStore.write(config.authToken, account: secretAccount)
+        let data = try JSONEncoder.memoir.encode(config.updating(authToken: ""))
         try data.write(to: configURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
     }
 }
 
@@ -138,6 +150,14 @@ extension JSONDecoder {
 }
 
 public enum Hashing {
+    public static func sha256Hex(for url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func sha256Hex(for data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -296,9 +316,10 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
         let appleSiliconAvailable = ProcessInfo.processInfo.machineHardwareName == "arm64"
         let pythonAvailable = FileManager.default.fileExists(atPath: pythonURL.path)
         let whisperKitConfigured = FileManager.default.fileExists(atPath: ProcessorPaths.whisperModelDirectory(for: config, model: config.modelName).path)
-        let diarizationInstalled = pythonAvailable && runPython(arguments: ["-c", "import torch, pyannote.audio"], allowFailure: true).terminationStatus == 0
+        let runtimePython = diarizationPythonURL(config: config)
+        let diarizationInstalled = FileManager.default.fileExists(atPath: runtimePython.path) && (try? SubprocessRunner.run(executable: runtimePython, arguments: ["-c", "import torch, torchaudio, pyannote.audio"], timeout: 60).status) == 0
         let ffmpegAvailable = ffmpegCandidatePaths.contains { FileManager.default.fileExists(atPath: $0) }
-        let mpsAvailable = pythonAvailable && runPython(arguments: ["-c", "import torch; print(int(torch.backends.mps.is_available()))"], allowFailure: true).output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        let mpsAvailable = diarizationInstalled && (try? SubprocessRunner.run(executable: runtimePython, arguments: ["-c", "import torch; raise SystemExit(0 if torch.backends.mps.is_available() else 1)"], timeout: 60).status) == 0
         return RuntimeDependencyStatus(
             appleSiliconAvailable: appleSiliconAvailable,
             pythonAvailable: pythonAvailable,
@@ -315,25 +336,23 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
         try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
     }
 
-    public func installDiarizationRuntime() throws {
-        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-            throw ProcessorError(code: "python_missing", message: "System Python 3 is not available at /usr/bin/python3.", retryable: false)
-        }
+    public func diarizationPythonURL(config: AppConfig) -> URL {
+        ProcessorPaths.diarizationRuntimeDirectory(for: config).appendingPathComponent("venv/bin/python3")
+    }
 
-        let ensurepip = runPython(arguments: ["-m", "ensurepip", "--upgrade"], allowFailure: true)
-        if ensurepip.terminationStatus != 0,
-           !ensurepip.output.localizedCaseInsensitiveContains("already satisfied"),
-           !ensurepip.output.localizedCaseInsensitiveContains("not allowed") {
-            throw ProcessorError(code: "runtime_install_failed", message: ensurepip.output.isEmpty ? "Failed to initialize pip." : ensurepip.output, retryable: false)
+    public func installDiarizationRuntime(config: AppConfig) throws {
+        let candidates = ["/opt/homebrew/bin/python3.11", "/usr/local/bin/python3.11", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/python3.11").path]
+        guard let interpreter = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            throw ProcessorError(code: "python_missing", message: "Install Python 3.11 with Homebrew (brew install python@3.11), then retry.", retryable: false)
         }
-
-        let pipInstall = runPython(
-            arguments: ["-m", "pip", "install", "--user", "torch", "torchaudio", "pyannote.audio"],
-            allowFailure: true
-        )
-        guard pipInstall.terminationStatus == 0 else {
-            throw ProcessorError(code: "runtime_install_failed", message: pipInstall.output.isEmpty ? "Failed to install the diarization runtime." : pipInstall.output, retryable: false)
-        }
+        let root = ProcessorPaths.diarizationRuntimeDirectory(for: config)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let creation = try SubprocessRunner.run(executable: URL(fileURLWithPath: interpreter), arguments: ["-m", "venv", root.appendingPathComponent("venv").path], timeout: 120)
+        guard creation.status == 0 else { throw ProcessorError(code: "runtime_install_failed", message: "Unable to create isolated Python environment.", retryable: false) }
+        let requirements = Bundle.main.resourceURL?.appendingPathComponent("worker/requirements-lock.txt")
+        let requirementsURL = requirements.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("worker/requirements-lock.txt")
+        let result = try SubprocessRunner.run(executable: diarizationPythonURL(config: config), arguments: ["-m", "pip", "install", "-r", requirementsURL.path], timeout: 1800)
+        guard result.status == 0 else { throw ProcessorError(code: "runtime_install_failed", message: String(data: result.error, encoding: .utf8) ?? "Runtime installation failed.", retryable: true) }
     }
 
     public func installFFmpeg() throws {
@@ -341,26 +360,8 @@ public final class RuntimeDependencyManager: @unchecked Sendable {
             throw ProcessorError(code: "brew_missing", message: "Homebrew is required to install ffmpeg automatically. Install Homebrew or add ffmpeg to PATH manually.", retryable: false)
         }
 
-        let process = Process()
-        process.executableURL = brewURL
-        process.arguments = ["install", "ffmpeg"]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw ProcessorError(code: "runtime_install_failed", message: error.localizedDescription, retryable: false)
-        }
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile() + stderr.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
-            throw ProcessorError(code: "runtime_install_failed", message: output.isEmpty ? "Failed to install ffmpeg." : output, retryable: false)
-        }
+        let result = try SubprocessRunner.run(executable: brewURL, arguments: ["install", "ffmpeg"], timeout: 1800)
+        guard result.status == 0 else { throw ProcessorError(code: "runtime_install_failed", message: String(data: result.error, encoding: .utf8) ?? "ffmpeg installation failed.", retryable: true) }
     }
 
     public func saveHuggingFaceToken(_ token: String?) throws {
@@ -518,5 +519,13 @@ public final class TLSMaterialManager: @unchecked Sendable {
             let output = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "OpenSSL failed."
             throw ProcessorError(code: "tls_generation_failed", message: output, retryable: false)
         }
+    }
+}
+
+public extension ISO8601DateFormatter {
+    static func memoirTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 }

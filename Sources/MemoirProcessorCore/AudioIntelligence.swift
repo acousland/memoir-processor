@@ -48,39 +48,20 @@ public final class PythonDiarizationWorker: @unchecked Sendable {
         sessionID: String,
         sourceTrack: SpeakerSource,
         config: AppConfig,
-        huggingFaceToken: String?
+        huggingFaceToken: String?,
+        onStart: ((Int32) -> Void)? = nil
     ) throws -> WorkerDiarizationResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [
-            scriptURL.path,
-            "--audio", audioURL.path,
-            "--session-id", sessionID,
-            "--source-track", sourceTrack.rawValue
-        ]
-        if config.allowCPUFallbackForDiarization {
-            process.arguments?.append("--allow-cpu-fallback")
+        let python = RuntimeDependencyManager().diarizationPythonURL(config: config)
+        var arguments = [scriptURL.path, "--audio", audioURL.path, "--session-id", sessionID, "--source-track", sourceTrack.rawValue]
+        if config.allowCPUFallbackForDiarization { arguments.append("--allow-cpu-fallback") }
+        arguments.append("--prefer-mps")
+        var environment = ProcessInfo.processInfo.environment
+        if let huggingFaceToken { environment["HF_TOKEN"] = huggingFaceToken }
+        let result = try SubprocessRunner.run(executable: python, arguments: arguments, environment: environment, onStart: onStart)
+        guard result.status == 0 else {
+            throw ProcessorError(code: "diarization_failed", message: String(data: result.error, encoding: .utf8) ?? "Diarization failed.", retryable: true)
         }
-        if ProcessInfo.processInfo.machineHardwareName == "arm64" {
-            process.arguments?.append("--prefer-mps")
-        }
-        if let huggingFaceToken, !huggingFaceToken.isEmpty {
-            process.arguments?.append(contentsOf: ["--hf-token", huggingFaceToken])
-        }
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let errorOutput = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "Diarization worker failed."
-            throw ProcessorError(code: "diarization_failed", message: errorOutput.trimmingCharacters(in: .whitespacesAndNewlines), retryable: true)
-        }
-
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = result.output
         do {
             return try JSONDecoder.memoir.decode(WorkerDiarizationResult.self, from: output)
         } catch {
@@ -96,7 +77,7 @@ public final class PythonDiarizationWorker: @unchecked Sendable {
 
 public enum TranscriptAlignment {
     public static func align(sourceTranscripts: [SourceTranscript], streamSync: StreamSyncMetadata?) -> [TrackAlignedTranscript] {
-        let relativeOffset = streamSync?.relativeOffsetToSystemSeconds ?? 0
+        let relativeOffset = streamSync?.alignedWavExport == true ? 0 : (streamSync?.relativeOffsetToSystemSeconds ?? 0)
         return sourceTranscripts.map { source in
             let shift: Double
             switch source.kind {
@@ -116,6 +97,7 @@ public enum TranscriptAlignment {
                         end: max(0, $0.end + shift),
                         speaker: $0.speaker,
                         speakerID: $0.speakerID,
+                        clusterID: $0.clusterID,
                         speakerSource: source.kind == .system ? .system : .mic,
                         speakerConfidence: $0.speakerConfidence,
                         text: $0.text
@@ -126,24 +108,18 @@ public enum TranscriptAlignment {
     }
 
     public static func mergeAndDedupe(_ alignedTracks: [TrackAlignedTranscript]) -> [TranscriptSegment] {
-        let sorted = alignedTracks.flatMap(\.segments).sorted {
+        let all = alignedTracks.flatMap(\.segments)
+        let system = all.filter { $0.speakerSource == .system }
+        return all.filter { candidate in
+            candidate.speakerSource != .mic || !system.contains { shouldSuppress(candidate: candidate, existing: $0) }
+        }.sorted {
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
         }
-
-        var merged: [TranscriptSegment] = []
-        for segment in sorted {
-            if let last = merged.last,
-               shouldSuppress(candidate: segment, existing: last) {
-                continue
-            }
-            merged.append(segment)
-        }
-        return merged
     }
 
     public static func align(turns: [DiarizationTurn], streamSync: StreamSyncMetadata?) -> [DiarizationTurn] {
-        let relativeOffset = streamSync?.relativeOffsetToSystemSeconds ?? 0
+        let relativeOffset = streamSync?.alignedWavExport == true ? 0 : (streamSync?.relativeOffsetToSystemSeconds ?? 0)
         return turns.map { turn in
             let shift: Double
             switch turn.sourceTrack {

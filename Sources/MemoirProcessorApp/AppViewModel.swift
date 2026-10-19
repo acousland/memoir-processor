@@ -32,7 +32,19 @@ final class AppViewModel: ObservableObject {
     private let runtimeDependencyManager = RuntimeDependencyManager()
 
     init() {
-        Task { await reload() }
+        Task {
+            await reload()
+            do { try UpdateServiceLifecycle.restartAfterUpdateIfNeeded(config: config) }
+            catch { message = "Unable to restart the updated service: " + error.localizedDescription }
+        }
+    }
+
+    func refreshSessionStatuses() async {
+        guard let store else { return }
+        do {
+            sessions = try store.listSessions()
+            try loadSelectedSessionContext()
+        } catch { message = error.localizedDescription }
     }
 
     func reload() async {
@@ -42,7 +54,8 @@ final class AppViewModel: ObservableObject {
             sessions = try store?.listSessions() ?? []
             speakerProfiles = try store?.listSpeakerProfiles() ?? []
             huggingFaceToken = runtimeDependencyManager.huggingFaceToken() ?? ""
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             apply(serviceState: serviceManager.serviceState())
             try loadSelectedSessionContext()
         } catch {
@@ -54,7 +67,8 @@ final class AppViewModel: ObservableObject {
         do {
             try configStore.save(config)
             store = try SessionStore(config: config)
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             apply(serviceState: serviceManager.serviceState())
             sessions = try store?.listSessions() ?? []
             speakerProfiles = try store?.listSpeakerProfiles() ?? []
@@ -68,7 +82,8 @@ final class AppViewModel: ObservableObject {
     func saveHuggingFaceToken() async {
         do {
             try runtimeDependencyManager.saveHuggingFaceToken(huggingFaceToken)
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             message = huggingFaceToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "Hugging Face token cleared."
                 : "Hugging Face token saved to Keychain."
@@ -119,8 +134,10 @@ final class AppViewModel: ObservableObject {
 
     func prepareWhisperModel() async {
         do {
-            let response = try serviceManager.prepareWhisperModel(config: config)
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            let configuration = config
+            let response = try await Task.detached { try ServiceManager().prepareWhisperModel(config: configuration) }.value
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             let model = response["model"] ?? config.modelName
             message = "WhisperKit model '\(model)' is ready."
         } catch {
@@ -130,8 +147,10 @@ final class AppViewModel: ObservableObject {
 
     func installDiarizationRuntime() async {
         do {
-            try runtimeDependencyManager.installDiarizationRuntime()
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            let configuration = config
+            try await Task.detached { try RuntimeDependencyManager().installDiarizationRuntime(config: configuration) }.value
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             message = "Diarization runtime installed."
         } catch {
             message = error.localizedDescription
@@ -140,8 +159,9 @@ final class AppViewModel: ObservableObject {
 
     func installFFmpeg() async {
         do {
-            try runtimeDependencyManager.installFFmpeg()
-            runtimeStatus = runtimeDependencyManager.currentStatus(config: config)
+            try await Task.detached { try RuntimeDependencyManager().installFFmpeg() }.value
+            let configurationForStatus = config
+            runtimeStatus = await Task.detached { RuntimeDependencyManager().currentStatus(config: configurationForStatus) }.value
             message = "ffmpeg installed."
         } catch {
             message = error.localizedDescription

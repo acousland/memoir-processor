@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import contextlib
 import sys
 import warnings
 
@@ -108,7 +110,7 @@ def main() -> int:
             args.audio,
             waveform,
             sample_rate,
-            args.hf_token,
+            (args.hf_token or os.environ.get("HF_TOKEN")),
             device,
             backend,
             Pipeline,
@@ -127,7 +129,7 @@ def main() -> int:
                 args.audio,
                 waveform,
                 sample_rate,
-                args.hf_token,
+                (args.hf_token or os.environ.get("HF_TOKEN")),
                 device,
                 backend,
                 Pipeline,
@@ -191,9 +193,10 @@ def main() -> int:
         "turns": turns,
         "embeddings": embeddings,
     }
-    print(json.dumps(payload))
+    print(json.dumps(payload), file=sys.__stdout__)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    with contextlib.redirect_stdout(sys.stderr):
+        raise SystemExit(main())

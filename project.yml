@@ -8,9 +8,12 @@ settings:
     SWIFT_VERSION: 6.0
     MACOSX_DEPLOYMENT_TARGET: 15.0
 packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit.git
-    from: 0.18.0
+    exactVersion: 0.18.0
 targets:
   MemoirProcessorCore:
     type: library.static
@@ -62,13 +65,19 @@ targets:
     dependencies:
       - target: MemoirProcessorCore
       - target: MemoirProcessorAgent
+        embed: false
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.memoir.processor.app
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         CODE_SIGNING_ALLOWED: NO
+        MARKETING_VERSION: 1.1.0
+        CURRENT_PROJECT_VERSION: 2026101901
         PRODUCT_NAME: Memoir Processor
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
     postBuildScripts:
       - name: Bundle Agent
         script: |
@@ -103,6 +112,11 @@ schemes:
       targets:
         MemoirProcessorApp: all
         MemoirProcessorAgent: all
+    run:
+      executable: MemoirProcessorApp
+    test:
+      targets:
+        - MemoirProcessorCoreTests
   MemoirProcessorAgent:
     build:
       targets:

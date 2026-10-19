@@ -1,0 +1,19 @@
+name: Validate Memoir Processor
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - run: xcodebuild -project MemoirProcessor.xcodeproj -scheme MemoirProcessorApp -destination 'platform=macOS' test

@@ -56,6 +56,9 @@ public final class SessionStore: @unchecked Sendable {
         if try !hasColumn("worker_pid", in: "sessions") {
             try database.execute("ALTER TABLE sessions ADD COLUMN worker_pid INTEGER;")
         }
+        if try !hasColumn("next_attempt_at", in: "sessions") {
+            try database.execute("ALTER TABLE sessions ADD COLUMN next_attempt_at TEXT;")
+        }
         try database.execute("""
             CREATE TABLE IF NOT EXISTS idempotency_records (
                 endpoint TEXT NOT NULL,
@@ -144,6 +147,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func fetchStatus(sessionID: String) throws -> SessionStatusResponse {
+        try validateSessionID(sessionID)
         guard let row = try database.fetchOne("SELECT * FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
             throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
         }
@@ -173,6 +177,19 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func createSession(_ request: CreateSessionRequest, idempotencyKey: String, baseURL: String) throws -> (CreateSessionResponse, Int) {
+        try database.transaction { try createSessionWithinTransaction(request, idempotencyKey: idempotencyKey, baseURL: baseURL) }
+    }
+
+    public func completeSession(sessionID: String, request: CompleteSessionRequest, idempotencyKey: String) throws -> (CompleteSessionResponse, Int) {
+        try database.transaction { try completeSessionWithinTransaction(sessionID: sessionID, request: request, idempotencyKey: idempotencyKey) }
+    }
+
+    private func createSessionWithinTransaction(_ request: CreateSessionRequest, idempotencyKey: String, baseURL: String) throws -> (CreateSessionResponse, Int) {
+        try validateSessionID(request.sessionID)
+        guard request.expectedFiles.metadata, request.expectedFiles.system,
+              ISO8601DateFormatter().date(from: request.recordingStartedAt.replacingOccurrences(of: #"\.\d+(?=Z|[+-]\d\d:\d\d$)"#, with: "", options: .regularExpression)) != nil else {
+            throw ProcessorError(code: "invalid_request", message: "Required files or recording dates are invalid.", retryable: false)
+        }
         let requestHash = try jsonHash(request)
         if let existing = try idempotentResponse(for: .create, key: idempotencyKey, requestHash: requestHash, type: CreateSessionResponse.self) {
             return (existing, 200)
@@ -224,6 +241,18 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func saveUpload(sessionID: String, kind: UploadFileKind, body: Data, headerChecksum: String) throws -> FileUploadResponse {
+        let temporary = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try body.write(to: temporary)
+        defer { try? fileManager.removeItem(at: temporary) }
+        return try saveUpload(sessionID: sessionID, kind: kind, fileURL: temporary, headerChecksum: headerChecksum)
+    }
+
+    public func saveUpload(sessionID: String, kind: UploadFileKind, fileURL: URL, headerChecksum: String) throws -> FileUploadResponse {
+        try database.transaction { try saveUploadWithinTransaction(sessionID: sessionID, kind: kind, fileURL: fileURL, headerChecksum: headerChecksum) }
+    }
+
+    private func saveUploadWithinTransaction(sessionID: String, kind: UploadFileKind, fileURL: URL, headerChecksum: String) throws -> FileUploadResponse {
+        try validateSessionID(sessionID)
         guard let row = try database.fetchOne("SELECT * FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
             throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
         }
@@ -237,19 +266,23 @@ public final class SessionStore: @unchecked Sendable {
             throw ProcessorError(code: "unexpected_file", message: "Upload is not expected for this session.", retryable: false)
         }
 
-        let actualChecksum = Hashing.sha256Hex(for: body)
+        let actualChecksum = try Hashing.sha256Hex(for: fileURL)
         guard actualChecksum == headerChecksum else {
             throw ProcessorError(code: "checksum_mismatch", message: "Uploaded file hash does not match X-Content-SHA256 header.", retryable: false)
         }
 
-        let size = body.count
+        let size = try fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? Int ?? 0
         let existingHashColumn = "\(kind.rawValue)_sha256"
         if let existingHash = row[existingHashColumn]?.stringValue, !existingHash.isEmpty, existingHash != actualChecksum {
             throw ProcessorError(code: "file_conflict", message: "File slot already contains different bytes.", retryable: false)
         }
 
         let targetURL: URL = kind == .metadata ? ProcessorPaths.metadataURL(for: config, sessionID: sessionID) : ProcessorPaths.audioURL(for: config, sessionID: sessionID, kind: kind)
-        try body.write(to: targetURL, options: .atomic)
+        let staged = targetURL.appendingPathExtension("incoming")
+        try? fileManager.removeItem(at: staged)
+        try fileManager.copyItem(at: fileURL, to: staged)
+        if fileManager.fileExists(atPath: targetURL.path) { try fileManager.removeItem(at: staged) }
+        else { try fileManager.moveItem(at: staged, to: targetURL) }
         let receivedColumn = "\(kind.rawValue)_received"
         let sizeColumn = "\(kind.rawValue)_size"
         let hashColumn = "\(kind.rawValue)_sha256"
@@ -278,7 +311,8 @@ public final class SessionStore: @unchecked Sendable {
         return FileUploadResponse(sessionID: sessionID, file: kind.rawValue, sizeBytes: size, sha256: actualChecksum, accepted: true)
     }
 
-    public func completeSession(sessionID: String, request: CompleteSessionRequest, idempotencyKey: String) throws -> (CompleteSessionResponse, Int) {
+    private func completeSessionWithinTransaction(sessionID: String, request: CompleteSessionRequest, idempotencyKey: String) throws -> (CompleteSessionResponse, Int) {
+        try validateSessionID(sessionID)
         let requestHash = try jsonHash(request)
         if let existing = try idempotentResponse(for: .complete, key: idempotencyKey, requestHash: requestHash, type: CompleteSessionResponse.self) {
             return (existing, 200)
@@ -328,25 +362,39 @@ public final class SessionStore: @unchecked Sendable {
         return (response, 200)
     }
 
+    public func claimNextRunnableSession() throws -> String? {
+        try database.transaction {
+            guard let sessionID = try nextRunnableSession() else { return nil }
+            try setProcessingState(sessionID: sessionID, state: .validating)
+            return sessionID
+        }
+    }
+
     public func nextRunnableSession() throws -> String? {
         try database.fetchOne("""
             SELECT session_id
             FROM sessions
-            WHERE processing_state IN (?, ?)
+            WHERE processing_state IN (?, ?) AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
             ORDER BY updated_at ASC
             LIMIT 1
-        """, bindings: [.text(ProcessingState.queued.rawValue), .text(ProcessingState.retryPending.rawValue)])?["session_id"]?.stringValue
+        """, bindings: [.text(ProcessingState.queued.rawValue), .text(ProcessingState.retryPending.rawValue), .text(Time.nowString())])?["session_id"]?.stringValue
     }
 
     public func markRetryPending(sessionID: String, error: ProcessorError) throws {
+        try validateSessionID(sessionID)
         guard let row = try database.fetchOne("SELECT attempt FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else { return }
         let attempt = row["attempt"]?.intValue ?? 0
         let nextAttempt = attempt + 1
-        let nextState: ProcessingState = nextAttempt < config.maxRetries ? .retryPending : .failed
+        let nextState: ProcessingState = error.retryable && nextAttempt < config.maxRetries ? .retryPending : .failed
         try setProcessingState(sessionID: sessionID, state: nextState, attempt: nextAttempt, error: error)
+        if nextState == .retryPending {
+            let due = ISO8601DateFormatter.memoirTimestamp(Date().addingTimeInterval(min(300, pow(2, Double(nextAttempt)))))
+            try database.execute("UPDATE sessions SET next_attempt_at = ? WHERE session_id = ?", bindings: [.text(due), .text(sessionID)])
+        }
     }
 
     public func setProcessingState(sessionID: String, state: ProcessingState, attempt: Int? = nil, error: ProcessorError? = nil) throws {
+        try validateSessionID(sessionID)
         let currentAttempt: Int
         if let attempt {
             currentAttempt = attempt
@@ -362,7 +410,7 @@ public final class SessionStore: @unchecked Sendable {
                 error_code = ?,
                 error_message = ?,
                 retryable = ?,
-                stop_requested = 0,
+                next_attempt_at = NULL,
                 worker_pid = NULL
             WHERE session_id = ?
         """, bindings: [
@@ -378,11 +426,18 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func retrySession(sessionID: String) throws {
+        try validateSessionID(sessionID)
+        let state = try fetchStatus(sessionID: sessionID).processingState
+        guard ![ProcessingState.validating, .transcribing, .diarizing, .writingArtifacts].contains(where: { $0 == state }) else {
+            throw ProcessorError(code: "session_busy", message: "Wait for the active job to stop before retrying.", retryable: false)
+        }
+        try database.execute("UPDATE sessions SET stop_requested = 0, attempt = 0 WHERE session_id = ?", bindings: [.text(sessionID)])
         try setProcessingState(sessionID: sessionID, state: .retryPending, error: nil)
         try appendLog(sessionID: sessionID, line: "Manual retry requested.")
     }
 
     public func requestStopSession(sessionID: String) throws {
+        try validateSessionID(sessionID)
         guard let row = try database.fetchOne("SELECT processing_state, worker_pid FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
             throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
         }
@@ -409,14 +464,23 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func removeSession(sessionID: String) throws {
+        try database.transaction { try removeSessionWithinTransaction(sessionID: sessionID) }
+    }
+
+    private func removeSessionWithinTransaction(sessionID: String) throws {
+        try validateSessionID(sessionID)
         guard try database.fetchOne("SELECT session_id FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) != nil else {
             throw ProcessorError(code: "session_not_found", message: "Session does not exist.", retryable: false)
         }
 
-        try? requestStopSession(sessionID: sessionID)
+        let active = try fetchStatus(sessionID: sessionID).processingState
+        guard ![ProcessingState.validating, .transcribing, .diarizing, .writingArtifacts].contains(where: { $0 == active }) else {
+            throw ProcessorError(code: "session_busy", message: "Stop the session and wait for processing to finish before removing it.", retryable: true)
+        }
         try database.execute("DELETE FROM session_warnings WHERE session_id = ?", bindings: [.text(sessionID)])
         try database.execute("DELETE FROM session_speakers WHERE session_id = ?", bindings: [.text(sessionID)])
         try database.execute("DELETE FROM speaker_profile_embeddings WHERE source_session_id = ?", bindings: [.text(sessionID)])
+        try database.execute("DELETE FROM idempotency_records WHERE response_json LIKE ?", bindings: [.text("%" + sessionID + "%")])
         try database.execute("DELETE FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)])
         let sessionDirectory = ProcessorPaths.sessionDirectory(for: config, sessionID: sessionID)
         if fileManager.fileExists(atPath: sessionDirectory.path) {
@@ -428,7 +492,7 @@ public final class SessionStore: @unchecked Sendable {
         let rows = try database.fetchAll("""
             SELECT session_id, processing_state
             FROM sessions
-            WHERE processing_state IN (?, ?, ?)
+            WHERE processing_state IN (?, ?, ?, ?)
         """, bindings: [
             .text(ProcessingState.validating.rawValue),
             .text(ProcessingState.transcribing.rawValue),
@@ -453,6 +517,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func appendLog(sessionID: String, line: String) throws {
+        try validateSessionID(sessionID)
         let logURL = ProcessorPaths.logsURL(for: config, sessionID: sessionID)
         let entry = "[\(Time.nowString())] \(line)\n"
         if fileManager.fileExists(atPath: logURL.path) {
@@ -466,6 +531,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func writeTranscriptArtifacts(sessionID: String, transcript: CanonicalTranscript) throws {
+        try validateSessionID(sessionID)
         let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
         try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
 
@@ -486,6 +552,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func writeDiarizationArtifact(sessionID: String, artifact: DiarizationArtifact) throws {
+        try validateSessionID(sessionID)
         let processingDirectory = ProcessorPaths.processingDirectory(for: config, sessionID: sessionID)
         try fileManager.createDirectory(at: processingDirectory, withIntermediateDirectories: true)
         let diarizationURL = processingDirectory.appendingPathComponent("diarization.json")
@@ -497,6 +564,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func setWorkerPID(sessionID: String, pid: Int32?) throws {
+        try validateSessionID(sessionID)
         try database.execute("""
             UPDATE sessions
             SET worker_pid = ?,
@@ -510,6 +578,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func isStopRequested(sessionID: String) throws -> Bool {
+        try validateSessionID(sessionID)
         guard let row = try database.fetchOne("SELECT stop_requested FROM sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else {
             return true
         }
@@ -517,6 +586,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func markStopped(sessionID: String) throws {
+        try validateSessionID(sessionID)
         try database.execute("""
             UPDATE sessions
             SET processing_state = ?,
@@ -559,6 +629,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func addWarning(sessionID: String, code: String, message: String) throws {
+        try validateSessionID(sessionID)
         let warning = SessionWarning(code: code, message: message, createdAt: Time.nowString())
         try database.execute("""
             INSERT INTO session_warnings (id, session_id, code, message, created_at)
@@ -573,11 +644,13 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func clearWarnings(sessionID: String) throws {
+        try validateSessionID(sessionID)
         try database.execute("DELETE FROM session_warnings WHERE session_id = ?", bindings: [.text(sessionID)])
     }
 
     public func listSessionSpeakers(sessionID: String) throws -> [SessionSpeaker] {
-        try database.fetchAll("""
+        try validateSessionID(sessionID)
+        return try database.fetchAll("""
             SELECT session_id, cluster_id, display_label, source_track, speaking_duration_seconds, matched_profile_id,
                    matched_profile_name, match_confidence, assignment_state, representative_text
             FROM session_speakers
@@ -600,6 +673,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func upsertSessionSpeakers(sessionID: String, speakers: [SessionSpeaker]) throws {
+        try validateSessionID(sessionID)
         let now = Time.nowString()
         for speaker in speakers {
             try database.execute("""
@@ -637,6 +711,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func saveSessionSpeakerEmbedding(sessionID: String, clusterID: String, vector: [Double]) throws {
+        try validateSessionID(sessionID)
         let vectorJSON = String(data: try JSONEncoder.memoir.encode(vector), encoding: .utf8) ?? "[]"
         try database.execute("""
             UPDATE session_speakers
@@ -651,6 +726,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func sessionSpeakerEmbedding(sessionID: String, clusterID: String) throws -> [Double]? {
+        try validateSessionID(sessionID)
         guard
             let row = try database.fetchOne("""
                 SELECT embedding_vector_json
@@ -731,6 +807,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func renameSpeakerProfile(profileID: String, name: String) throws {
+        let assignments = try database.fetchAll("SELECT session_id, cluster_id FROM session_speakers WHERE matched_profile_id = ?", bindings: [.text(profileID)])
         try database.execute("""
             UPDATE speaker_profiles
             SET display_name = ?, updated_at = ?
@@ -738,9 +815,14 @@ public final class SessionStore: @unchecked Sendable {
         """, bindings: [.text(name), .text(Time.nowString()), .text(profileID)])
         try database.execute("""
             UPDATE session_speakers
-            SET matched_profile_name = ?, updated_at = ?
+            SET matched_profile_name = ?, display_label = ?, updated_at = ?
             WHERE matched_profile_id = ?
-        """, bindings: [.text(name), .text(Time.nowString()), .text(profileID)])
+        """, bindings: [.text(name), .text(name), .text(Time.nowString()), .text(profileID)])
+        for row in assignments {
+            if let sessionID = row["session_id"]?.stringValue, let clusterID = row["cluster_id"]?.stringValue {
+                try relabelArtifacts(sessionID: sessionID, clusterID: clusterID, profileID: profileID, profileName: name)
+            }
+        }
     }
 
     public func archiveSpeakerProfile(profileID: String) throws {
@@ -775,6 +857,7 @@ public final class SessionStore: @unchecked Sendable {
     }
 
     public func assignSessionSpeaker(sessionID: String, clusterID: String, profileID: String, profileName: String) throws {
+        try validateSessionID(sessionID)
         try database.execute("""
             UPDATE session_speakers
             SET matched_profile_id = ?,
@@ -823,6 +906,17 @@ public final class SessionStore: @unchecked Sendable {
 
         guard row["size"]?.intValue == descriptor.sizeBytes, row["sha256"]?.stringValue == descriptor.sha256 else {
             throw ProcessorError(code: "checksum_mismatch", message: "Uploaded file metadata does not match stored file.", retryable: false)
+        }
+    }
+
+    private func validateSessionID(_ value: String) throws {
+        guard UUID(uuidString: value) != nil else {
+            throw ProcessorError(code: "invalid_request", message: "session_id must be a UUID.", retryable: false)
+        }
+        let root = ProcessorPaths.sessionsDirectory(for: config).resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        let path = ProcessorPaths.sessionDirectory(for: config, sessionID: value).resolvingSymlinksInPath().standardizedFileURL.path
+        guard path.hasPrefix(root) else {
+            throw ProcessorError(code: "invalid_request", message: "Session path escapes storage.", retryable: false)
         }
     }
 
@@ -897,13 +991,14 @@ public final class SessionStore: @unchecked Sendable {
                 sourceFiles: transcript.sourceFiles,
                 transcription: transcript.transcription,
                 segments: transcript.segments.map { segment in
-                    guard segment.speakerID == clusterID else { return segment }
+                    guard (segment.clusterID ?? segment.speakerID) == clusterID else { return segment }
                     return TranscriptSegment(
                         id: segment.id,
                         start: segment.start,
                         end: segment.end,
                         speaker: profileName,
                         speakerID: profileID,
+                        clusterID: clusterID,
                         speakerSource: .manual,
                         speakerConfidence: 1.0,
                         text: segment.text

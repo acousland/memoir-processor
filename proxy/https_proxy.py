@@ -6,6 +6,8 @@ import signal
 import ssl
 import sys
 import traceback
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -31,6 +33,7 @@ def main() -> int:
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
     parser.add_argument("--pid-file", required=True)
+    parser.add_argument("--parent-pid", type=int, default=os.getppid())
     args = parser.parse_args()
 
     class ProxyHandler(BaseHTTPRequestHandler):
@@ -57,14 +60,33 @@ def main() -> int:
         def _forward(self):
             try:
                 content_length = int(self.headers.get("Content-Length", "0"))
-                body = self.rfile.read(content_length) if content_length else b""
+                if len(self.headers.get_all("Content-Length", [])) > 1:
+                    self.send_error(400)
+                    self.close_connection = True
+                    return
+                if content_length < 0 or content_length > 1_073_741_824 or self.headers.get("Transfer-Encoding"):
+                    self.send_error(413)
+                    self.close_connection = True
+                    return
+                self.connection.settimeout(60)
 
                 headers = {k: v for (k, v) in self.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS}
                 headers["Host"] = f"{args.target_host}:{args.target_port}"
 
                 conn = http.client.HTTPConnection(args.target_host, args.target_port, timeout=30)
                 try:
-                    conn.request(self.command, self.path, body=body, headers=headers)
+                    headers["Content-Length"] = str(content_length)
+                    conn.putrequest(self.command, self.path, skip_host=True)
+                    for name, value in headers.items():
+                        conn.putheader(name, value)
+                    conn.endheaders()
+                    remaining = content_length
+                    while remaining:
+                        chunk = self.rfile.read(min(65536, remaining))
+                        if not chunk:
+                            raise ConnectionError("Incomplete request body")
+                        conn.send(chunk)
+                        remaining -= len(chunk)
                     response = conn.getresponse()
                     payload = response.read()
                     self.send_response(response.status, response.reason)
@@ -107,11 +129,17 @@ def main() -> int:
             os.remove(args.pid_file)
         except FileNotFoundError:
             pass
-        httpd.shutdown()
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    def monitor_parent():
+        while os.getppid() == args.parent_pid:
+            time.sleep(1)
+        httpd.shutdown()
+
+    threading.Thread(target=monitor_parent, daemon=True).start()
     try:
         httpd.serve_forever()
     finally:

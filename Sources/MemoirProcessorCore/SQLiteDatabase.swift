@@ -3,7 +3,7 @@ import SQLite3
 
 public final class SQLiteDatabase: @unchecked Sendable {
     private let dbPointer: OpaquePointer
-    private let queue = DispatchQueue(label: "MemoirProcessor.SQLiteDatabase")
+    private let queue = NSRecursiveLock()
 
     public init(path: String) throws {
         var pointer: OpaquePointer?
@@ -16,6 +16,7 @@ public final class SQLiteDatabase: @unchecked Sendable {
         }
 
         dbPointer = pointer
+        sqlite3_busy_timeout(dbPointer, 5_000)
         try execute("PRAGMA journal_mode=WAL;")
         try execute("PRAGMA foreign_keys=ON;")
     }
@@ -25,7 +26,7 @@ public final class SQLiteDatabase: @unchecked Sendable {
     }
 
     public func execute(_ sql: String, bindings: [SQLiteValue] = [], allowFailure: Bool = false) throws {
-        try queue.sync {
+        try queue.withLock {
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(dbPointer, sql, -1, &statement, nil) == SQLITE_OK else {
                 throw sqliteError()
@@ -43,7 +44,7 @@ public final class SQLiteDatabase: @unchecked Sendable {
     }
 
     public func fetchAll(_ sql: String, bindings: [SQLiteValue] = []) throws -> [[String: SQLiteValue]] {
-        try queue.sync {
+        try queue.withLock {
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(dbPointer, sql, -1, &statement, nil) == SQLITE_OK else {
                 throw sqliteError()
@@ -52,14 +53,17 @@ public final class SQLiteDatabase: @unchecked Sendable {
             try bind(bindings, to: statement)
 
             var rows: [[String: SQLiteValue]] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
+            var result = sqlite3_step(statement)
+            while result == SQLITE_ROW {
                 var row: [String: SQLiteValue] = [:]
                 for index in 0..<sqlite3_column_count(statement) {
                     let name = String(cString: sqlite3_column_name(statement, index))
                     row[name] = SQLiteValue(statement: statement, index: index)
                 }
                 rows.append(row)
+                result = sqlite3_step(statement)
             }
+            guard result == SQLITE_DONE else { throw sqliteError() }
             return rows
         }
     }
@@ -68,23 +72,42 @@ public final class SQLiteDatabase: @unchecked Sendable {
         try fetchAll(sql, bindings: bindings).first
     }
 
+    public func transaction<T>(_ operation: () throws -> T) throws -> T {
+        try queue.withLock {
+            try execute("BEGIN IMMEDIATE;")
+            do {
+                let value = try operation()
+                try execute("COMMIT;")
+                return value
+            } catch {
+                try? execute("ROLLBACK;")
+                throw error
+            }
+        }
+    }
+
     private func bind(_ bindings: [SQLiteValue], to statement: OpaquePointer?) throws {
+        guard sqlite3_bind_parameter_count(statement) == bindings.count else {
+            throw ProcessorError(code: "database_bind_error", message: "SQL parameter count mismatch.", retryable: false)
+        }
         for (index, value) in bindings.enumerated() {
+            let result: Int32
             let parameter = Int32(index + 1)
             switch value {
             case .null:
-                sqlite3_bind_null(statement, parameter)
+                result = sqlite3_bind_null(statement, parameter)
             case .integer(let integer):
-                sqlite3_bind_int64(statement, parameter, sqlite3_int64(integer))
+                result = sqlite3_bind_int64(statement, parameter, sqlite3_int64(integer))
             case .double(let double):
-                sqlite3_bind_double(statement, parameter, double)
+                result = sqlite3_bind_double(statement, parameter, double)
             case .text(let string):
-                sqlite3_bind_text(statement, parameter, string, -1, SQLITE_TRANSIENT)
+                result = sqlite3_bind_text(statement, parameter, string, -1, SQLITE_TRANSIENT)
             case .blob(let data):
-                data.withUnsafeBytes { bytes in
-                    _ = sqlite3_bind_blob(statement, parameter, bytes.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                result = data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(statement, parameter, bytes.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
                 }
             }
+            guard result == SQLITE_OK else { throw sqliteError() }
         }
     }
 
@@ -113,7 +136,7 @@ public enum SQLiteValue: Sendable {
         case SQLITE_BLOB:
             let bytes = sqlite3_column_blob(statement, index)
             let length = Int(sqlite3_column_bytes(statement, index))
-            self = .blob(Data(bytes: bytes!, count: length))
+            self = .blob(length > 0 ? Data(bytes: bytes!, count: length) : Data())
         default:
             self = .null
         }

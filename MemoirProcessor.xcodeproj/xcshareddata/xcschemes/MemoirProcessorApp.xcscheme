@@ -46,14 +46,27 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "650C65F19FE0CCD300AF87CD"
-            BuildableName = "MemoirProcessorAgent"
-            BlueprintName = "MemoirProcessorAgent"
+            BlueprintIdentifier = "1BA98A2DFABDF113A5E1026D"
+            BuildableName = "MemoirProcessorApp.app"
+            BlueprintName = "MemoirProcessorApp"
             ReferencedContainer = "container:MemoirProcessor.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "09330B07035F1613D7753345"
+               BuildableName = "MemoirProcessorCoreTests.xctest"
+               BlueprintName = "MemoirProcessorCoreTests"
+               ReferencedContainer = "container:MemoirProcessor.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -69,12 +82,14 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "650C65F19FE0CCD300AF87CD"
-            BuildableName = "MemoirProcessorAgent"
-            BlueprintName = "MemoirProcessorAgent"
+            BlueprintIdentifier = "1BA98A2DFABDF113A5E1026D"
+            BuildableName = "MemoirProcessorApp.app"
+            BlueprintName = "MemoirProcessorApp"
             ReferencedContainer = "container:MemoirProcessor.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -86,9 +101,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "650C65F19FE0CCD300AF87CD"
-            BuildableName = "MemoirProcessorAgent"
-            BlueprintName = "MemoirProcessorAgent"
+            BlueprintIdentifier = "1BA98A2DFABDF113A5E1026D"
+            BuildableName = "MemoirProcessorApp.app"
+            BlueprintName = "MemoirProcessorApp"
             ReferencedContainer = "container:MemoirProcessor.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

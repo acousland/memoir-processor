@@ -52,6 +52,12 @@ struct ContentView: View {
             }
             .padding(24)
         }
+        .task {
+            while !Task.isCancelled {
+                await viewModel.refreshSessionStatuses()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .alert("Memoir Processor", isPresented: Binding(
             get: { viewModel.message != nil },
             set: { if !$0 { viewModel.message = nil } }

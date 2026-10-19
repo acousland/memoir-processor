@@ -29,6 +29,7 @@ final class WhisperKitTranscriptionWorker: @unchecked Sendable {
             verbose: false,
             language: languageHint,
             detectLanguage: languageHint == nil,
+            skipSpecialTokens: true,
             wordTimestamps: true
         )
         let results: [TranscriptionResult] = try await pipeline.transcribe(audioPath: audioURL.path, decodeOptions: options)

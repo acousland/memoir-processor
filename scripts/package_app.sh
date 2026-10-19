@@ -1,24 +1,16 @@
-#!/bin/zsh
+#!/bin/bash
 set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="${ROOT_DIR}/build"
-APP_PATH="${BUILD_DIR}/Memoir Processor.app"
-
-mkdir -p "${BUILD_DIR}"
-
-rm -rf "${ROOT_DIR}/MemoirProcessor.xcodeproj"
-xcodegen generate --project-root "${ROOT_DIR}" >/dev/null
-xcodebuild \
-  -project "${ROOT_DIR}/MemoirProcessor.xcodeproj" \
-  -scheme MemoirProcessorApp \
-  -configuration Debug \
-  -destination 'platform=macOS' \
-  -derivedDataPath "${ROOT_DIR}/DerivedData" \
-  build >/dev/null
-
-rm -rf "${APP_PATH}"
-cp -R "${ROOT_DIR}/DerivedData/Build/Products/Debug/Memoir Processor.app" "${APP_PATH}"
-codesign --force --deep --sign - "${APP_PATH}" >/dev/null
-
-echo "${APP_PATH}"
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+xcodegen generate
+xcodebuild -project MemoirProcessor.xcodeproj -scheme MemoirProcessorApp -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData build
+app="$root/dist/Memoir Processor.app"
+mkdir -p dist
+rm -rf "$app"
+ditto 'DerivedData/Build/Products/Release/Memoir Processor.app' "$app"
+# The agent belongs in Contents/MacOS; remove copies left by older project generation.
+rm -f "$app/Contents/Resources/MemoirProcessorAgent"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(cat Assets/version)" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(cat Assets/build-number)" "$app/Contents/Info.plist"
+scripts/sign-app.sh "$app"
+echo "$app"

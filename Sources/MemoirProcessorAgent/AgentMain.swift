@@ -3,134 +3,6 @@ import MemoirProcessorCore
 import Network
 import Darwin
 
-private func normalizeTranscriptText(_ text: String) -> String {
-    let lowered = text.lowercased()
-    let scalars = lowered.unicodeScalars.map { scalar -> Character in
-        CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
-    }
-    return String(scalars).split(whereSeparator: \.isWhitespace).joined(separator: " ")
-}
-
-private func textSimilarity(_ lhs: String, _ rhs: String) -> Double {
-    let normalizedLeft = normalizeTranscriptText(lhs)
-    let normalizedRight = normalizeTranscriptText(rhs)
-    guard !normalizedLeft.isEmpty, !normalizedRight.isEmpty else { return 0 }
-    if normalizedLeft == normalizedRight { return 1 }
-    if normalizedLeft.contains(normalizedRight) || normalizedRight.contains(normalizedLeft) {
-        return 0.92
-    }
-
-    let leftTokens = Set(normalizedLeft.split(separator: " ").map(String.init))
-    let rightTokens = Set(normalizedRight.split(separator: " ").map(String.init))
-    let intersection = leftTokens.intersection(rightTokens).count
-    let union = leftTokens.union(rightTokens).count
-    guard union > 0 else { return 0 }
-    return Double(intersection) / Double(union)
-}
-
-private func median(_ values: [Double]) -> Double {
-    let sorted = values.sorted()
-    guard !sorted.isEmpty else { return 0 }
-    let middle = sorted.count / 2
-    if sorted.count.isMultiple(of: 2) {
-        return (sorted[middle - 1] + sorted[middle]) / 2
-    }
-    return sorted[middle]
-}
-
-private struct SegmentMatch {
-    let systemIndex: Int
-    let micIndex: Int
-    let similarity: Double
-    let offset: Double
-}
-
-private func alignAndMergeSegments(systemSegments: [TranscriptSegment], micSegments: [TranscriptSegment]) -> (segments: [TranscriptSegment], shiftedSource: String, offset: Double, droppedDuplicates: Int) {
-    var candidates: [SegmentMatch] = []
-    for (systemIndex, system) in systemSegments.enumerated() {
-        for (micIndex, mic) in micSegments.enumerated() {
-            let similarity = textSimilarity(system.text, mic.text)
-            if similarity >= 0.6 {
-                candidates.append(
-                    SegmentMatch(
-                        systemIndex: systemIndex,
-                        micIndex: micIndex,
-                        similarity: similarity,
-                        offset: mic.start - system.start
-                    )
-                )
-            }
-        }
-    }
-
-    candidates.sort {
-        if $0.similarity == $1.similarity {
-            return abs($0.offset) < abs($1.offset)
-        }
-        return $0.similarity > $1.similarity
-    }
-
-    var usedSystem = Set<Int>()
-    var usedMic = Set<Int>()
-    var matches: [SegmentMatch] = []
-    for candidate in candidates {
-        guard !usedSystem.contains(candidate.systemIndex), !usedMic.contains(candidate.micIndex) else { continue }
-        usedSystem.insert(candidate.systemIndex)
-        usedMic.insert(candidate.micIndex)
-        matches.append(candidate)
-    }
-
-    let offsets = matches.map(\.offset)
-    let rawOffset = offsets.isEmpty ? 0 : median(offsets)
-    let shiftSystem = rawOffset >= 0
-    let appliedOffset = abs(rawOffset)
-
-    let alignedSystem = systemSegments.map {
-        TranscriptSegment(
-            start: shiftSystem ? max(0, $0.start + appliedOffset) : $0.start,
-            end: shiftSystem ? max(0, $0.end + appliedOffset) : $0.end,
-            speaker: "System",
-            text: $0.text
-        )
-    }
-    let alignedMic = micSegments.map {
-        TranscriptSegment(
-            start: shiftSystem ? $0.start : max(0, $0.start + appliedOffset),
-            end: shiftSystem ? $0.end : max(0, $0.end + appliedOffset),
-            speaker: "Mic",
-            text: $0.text
-        )
-    }
-
-    var keptMic: [TranscriptSegment] = []
-    var droppedDuplicates = 0
-    for mic in alignedMic {
-        let duplicateSystemSegment = alignedSystem.first { system in
-            let overlapWindow = abs(system.start - mic.start) <= 3.0 || mic.start <= system.end + 0.75
-            return overlapWindow && textSimilarity(system.text, mic.text) >= 0.58
-        }
-
-        if duplicateSystemSegment != nil {
-            droppedDuplicates += 1
-            continue
-        }
-
-        keptMic.append(mic)
-    }
-
-    let merged = (alignedSystem + keptMic).sorted {
-        if $0.start == $1.start { return $0.end < $1.end }
-        return $0.start < $1.start
-    }
-
-    return (
-        merged,
-        shiftSystem ? "System" : "Mic",
-        appliedOffset,
-        droppedDuplicates
-    )
-}
-
 actor QueueCoordinator {
     private let store: SessionStore
     private let validator: SessionValidator
@@ -172,7 +44,7 @@ actor QueueCoordinator {
         defer { isRunning = false }
 
         while true {
-            let nextSession = try? store.nextRunnableSession()
+            let nextSession = try? store.claimNextRunnableSession()
             guard let sessionID = nextSession ?? nil else { break }
             do {
                 try stopIfRequested(sessionID: sessionID)
@@ -187,12 +59,12 @@ actor QueueCoordinator {
                 let micNormalizedURL = try validation.micAudioURL.map { try normalizer.normalizedAudioURL(for: sessionID, sourceURL: $0) }
 
                 let languageHint = validation.metadata.languageHint ?? config.languageHint
-                let huggingFaceToken = runtimeDependencyManager.huggingFaceToken()
+                let huggingFaceToken = config.diarizationEnabled ? runtimeDependencyManager.huggingFaceToken() : nil
                 var sourceTranscripts: [SourceTranscript] = []
 
                 try store.appendLog(sessionID: sessionID, line: "Transcribing system audio with WhisperKit.")
                 let transcriptionStart = Date()
-                let systemTranscript = try await transcriptionWorker.transcribe(
+                let systemTranscript = try await transcribeCancellably(sessionID: sessionID,
                     audioURL: systemNormalizedURL,
                     config: config,
                     languageHint: languageHint,
@@ -208,7 +80,7 @@ actor QueueCoordinator {
                 if let micNormalizedURL {
                     try store.appendLog(sessionID: sessionID, line: "Transcribing microphone audio with WhisperKit.")
                     let micStart = Date()
-                    let micTranscript = try await transcriptionWorker.transcribe(
+                    let micTranscript = try await transcribeCancellably(sessionID: sessionID,
                         audioURL: micNormalizedURL,
                         config: config,
                         languageHint: languageHint,
@@ -242,7 +114,8 @@ actor QueueCoordinator {
                             sessionID: sessionID,
                             sourceTrack: .system,
                             config: config,
-                            huggingFaceToken: huggingFaceToken
+                            huggingFaceToken: huggingFaceToken,
+                            onStart: { pid in try? self.store.setWorkerPID(sessionID: sessionID, pid: pid) }
                         )
                         try store.appendLog(
                             sessionID: sessionID,
@@ -258,7 +131,8 @@ actor QueueCoordinator {
                                 sessionID: sessionID,
                                 sourceTrack: .mic,
                                 config: config,
-                                huggingFaceToken: huggingFaceToken
+                                huggingFaceToken: huggingFaceToken,
+                            onStart: { pid in try? self.store.setWorkerPID(sessionID: sessionID, pid: pid) }
                             )
                             try store.appendLog(
                                 sessionID: sessionID,
@@ -268,6 +142,7 @@ actor QueueCoordinator {
                             micDiarization.embeddings.forEach { embeddingsByCluster[$0.clusterID] = $0 }
                         }
 
+                        try store.setWorkerPID(sessionID: sessionID, pid: nil)
                         let alignedTurns = TranscriptAlignment.align(turns: combinedTurns, streamSync: validation.streamSync)
                         let profiles = try store.listSpeakerProfiles()
                         let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
@@ -354,6 +229,20 @@ actor QueueCoordinator {
                 try? store.markRetryPending(sessionID: sessionID, error: processorError)
             }
         }
+    }
+
+    private func transcribeCancellably(sessionID: String, audioURL: URL, config: AppConfig, languageHint: String?, token: String?) async throws -> WorkerTranscriptResult {
+        let worker = transcriptionWorker
+        let store = self.store
+        let work = Task { try await worker.transcribe(audioURL: audioURL, config: config, languageHint: languageHint, token: token) }
+        let monitor = Task {
+            while !Task.isCancelled {
+                if (try? store.isStopRequested(sessionID: sessionID)) != false { work.cancel(); return }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        defer { monitor.cancel() }
+        return try await work.value
     }
 
     func prepareWhisperModel() async throws -> [String: String] {
@@ -453,6 +342,7 @@ actor QueueCoordinator {
                 end: segment.end,
                 speaker: sessionSpeaker.displayLabel,
                 speakerID: sessionSpeaker.matchedProfileID ?? matchingTurn.clusterID,
+                clusterID: matchingTurn.clusterID,
                 speakerSource: matchingTurn.sourceTrack,
                 speakerConfidence: sessionSpeaker.matchConfidence,
                 text: segment.text
@@ -465,12 +355,7 @@ actor QueueCoordinator {
     }
 }
 
-struct HTTPRequest {
-    let method: String
-    let path: String
-    let headers: [String: String]
-    let body: Data
-}
+typealias HTTPRequest = DecodedHTTPRequest
 
 struct HTTPResponse {
     let statusCode: Int
@@ -485,12 +370,15 @@ struct HTTPResponse {
 }
 
 final class SimpleHTTPServer: @unchecked Sendable {
+    private var activeConnections = Set<ObjectIdentifier>()
     private let listener: NWListener
     private let queue = DispatchQueue(label: "MemoirProcessor.HTTPServer")
     private let handler: (HTTPRequest) async -> HTTPResponse
+    private let authorizeHeaders: @Sendable (String, String, [String: String]) throws -> Void
 
-    init(host: String, port: UInt16, handler: @escaping (HTTPRequest) async -> HTTPResponse) throws {
+    init(host: String, port: UInt16, authorize: @escaping @Sendable (String, String, [String: String]) throws -> Void, handler: @escaping (HTTPRequest) async -> HTTPResponse) throws {
         self.handler = handler
+        self.authorizeHeaders = authorize
         let parameters = NWParameters.tcp
         let endpointPort = NWEndpoint.Port(rawValue: port)!
         if host != "0.0.0.0" {
@@ -511,16 +399,22 @@ final class SimpleHTTPServer: @unchecked Sendable {
     }
 
     private func accept(connection: NWConnection) {
+        guard activeConnections.count < 64 else { connection.cancel(); return }
+        let identity = ObjectIdentifier(connection)
+        activeConnections.insert(identity)
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
-                self.receive(on: connection, accumulated: Data())
+                let decoder = HTTPRequestDecoder(authorize: self.authorizeHeaders)
+                self.queue.asyncAfter(deadline: .now() + 600) { connection.cancel() }
+                self.receive(on: connection, decoder: decoder)
             case .failed(let error):
+                self.activeConnections.remove(identity)
                 fputs("Connection failed: \(error)\n", stderr)
                 connection.cancel()
             case .cancelled:
-                break
+                self.activeConnections.remove(identity)
             default:
                 break
             }
@@ -528,7 +422,7 @@ final class SimpleHTTPServer: @unchecked Sendable {
         connection.start(queue: queue)
     }
 
-    private func receive(on connection: NWConnection, accumulated: Data) {
+    private func receive(on connection: NWConnection, decoder: HTTPRequestDecoder) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] content, _, isComplete, error in
             guard let self else { return }
             if let error {
@@ -537,23 +431,21 @@ final class SimpleHTTPServer: @unchecked Sendable {
                 return
             }
 
-            var data = accumulated
-            if let content { data.append(content) }
-            if let request = Self.parseRequest(from: data) {
-                Task {
-                    let response = await self.handler(request)
-                    self.send(response: response, on: connection)
+            do {
+                if let request = try decoder.append(content ?? Data()) {
+                    Task {
+                        let response = await self.handler(request)
+                        self.send(response: response, on: connection)
+                        withExtendedLifetime(decoder) {}
+                    }
+                    return
                 }
-                return
+                if isComplete { throw ProcessorError(code: "invalid_request", message: "Incomplete request.", retryable: false) }
+                self.receive(on: connection, decoder: decoder)
+            } catch {
+                let failure = error as? ProcessorError ?? ProcessorError(code: "invalid_request", message: error.localizedDescription, retryable: false)
+                self.send(response: Self.jsonResponse(status: failure.code == "unauthorized" ? 401 : 400, error: failure), on: connection)
             }
-
-            if isComplete {
-                let response = Self.jsonResponse(status: 400, error: ProcessorError(code: "invalid_request", message: "Incomplete HTTP request.", retryable: false))
-                self.send(response: response, on: connection)
-                return
-            }
-
-            self.receive(on: connection, accumulated: data)
         }
     }
 
@@ -570,47 +462,11 @@ final class SimpleHTTPServer: @unchecked Sendable {
         })
     }
 
-    private static func parseRequest(from data: Data) -> HTTPRequest? {
-        guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
-            return nil
-        }
-
-        let headerData = data.subdata(in: 0..<headerRange.lowerBound)
-        guard let headerText = String(data: headerData, encoding: .utf8) else {
-            return nil
-        }
-
-        let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
-        guard let requestLine = lines.first else { return nil }
-        let requestParts = requestLine.split(separator: " ")
-        guard requestParts.count >= 2 else { return nil }
-
-        var headers: [String: String] = [:]
-        for line in lines.dropFirst() {
-            guard let separatorIndex = line.firstIndex(of: ":") else { continue }
-            let name = line[..<separatorIndex].trimmingCharacters(in: .whitespaces)
-            let value = line[line.index(after: separatorIndex)...].trimmingCharacters(in: .whitespaces)
-            headers[name.lowercased()] = value
-        }
-
-        let contentLength = Int(headers["content-length"] ?? "0") ?? 0
-        let bodyStart = headerRange.upperBound
-        guard data.count >= bodyStart + contentLength else {
-            return nil
-        }
-        let body = data.subdata(in: bodyStart..<(bodyStart + contentLength))
-        return HTTPRequest(
-            method: String(requestParts[0]),
-            path: String(requestParts[1]),
-            headers: headers,
-            body: body
-        )
-    }
-
     private static func reasonPhrase(for statusCode: Int) -> String {
         switch statusCode {
         case 200: return "OK"
         case 201: return "Created"
+        case 202: return "Accepted"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
         case 404: return "Not Found"
@@ -655,7 +511,8 @@ final class HTTPSProxyManager {
             "--target-port", String(targetPort),
             "--cert", certificateURL.path,
             "--key", privateKeyURL.path,
-            "--pid-file", pidFileURL.path
+            "--pid-file", pidFileURL.path,
+            "--parent-pid", String(getpid())
         ]
         process.standardOutput = FileHandle.standardOutput
         process.standardError = FileHandle.standardError
@@ -716,7 +573,17 @@ final class HTTPSProxyManager {
 @main
 enum MemoirProcessorAgentMain {
     static func main() throws {
-        let config = try ConfigStore().load()
+        let config: AppConfig
+        if let index = CommandLine.arguments.firstIndex(of: "--config"), CommandLine.arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+            config = try JSONDecoder.memoir.decode(AppConfig.self, from: Data(contentsOf: url))
+        } else { config = try ConfigStore().load() }
+        guard (1...65534).contains(config.port) else { throw ProcessorError(code: "configuration_invalid", message: "Port must be between 1 and 65534.", retryable: false) }
+        try FileManager.default.createDirectory(at: ProcessorPaths.root(for: config), withIntermediateDirectories: true)
+        let lockFD = open(ProcessorPaths.root(for: config).appendingPathComponent("agent.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+            throw ProcessorError(code: "agent_already_running", message: "Another processor agent owns this storage root.", retryable: false)
+        }
         let store = try SessionStore(config: config)
         let listenPort = config.tlsEnabled ? config.port + 1 : config.port
         let proxyManager: HTTPSProxyManager?
@@ -741,9 +608,19 @@ enum MemoirProcessorAgentMain {
             diarizationWorker: PythonDiarizationWorker(scriptURL: resolveDiarizationScript()),
             config: config
         )
-        Task { await queue.startRecovery() }
+        Task {
+            await queue.startRecovery()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                await queue.kick()
+            }
+        }
 
-        let server = try SimpleHTTPServer(host: config.tlsEnabled ? "127.0.0.1" : config.bindHost, port: UInt16(listenPort)) { request in
+        guard (1...65534).contains(config.port) else { throw ProcessorError(code: "configuration_invalid", message: "Port must be between 1 and 65534.", retryable: false) }
+        let server = try SimpleHTTPServer(host: config.tlsEnabled ? "127.0.0.1" : config.bindHost, port: UInt16(listenPort), authorize: { method, path, headers in
+            if method == "GET" && path == "/health" { return }
+            try authorize(headers: headers, config: config)
+        }) { request in
             await handle(request: request, config: config, store: store, queue: queue)
         }
         withExtendedLifetime(proxyManager) {
@@ -765,7 +642,10 @@ enum MemoirProcessorAgentMain {
                 return SimpleHTTPServer.jsonResponse(status: 200, value: ["status": "ok", "service": "memoir-processor", "api_version": "1"])
             }
 
-            try authorize(request: request, config: config)
+            try authorize(headers: request.headers, config: config)
+            if request.method == "GET", request.path == "/v1/connection" {
+                return SimpleHTTPServer.jsonResponse(status: 200, value: ["status": "authenticated"])
+            }
 
             if request.method == "POST", request.path == "/v1/operator/queue/kick" {
                 Task { await queue.kick() }
@@ -798,7 +678,8 @@ enum MemoirProcessorAgentMain {
                     throw ProcessorError(code: "invalid_request", message: "Invalid file kind.", retryable: false)
                 }
                 let checksum = try requiredHeader("x-content-sha256", in: request)
-                let response = try store.saveUpload(sessionID: sessionID, kind: kind, body: request.body, headerChecksum: checksum)
+                guard let uploadURL = request.uploadURL else { throw ProcessorError(code: "invalid_request", message: "Missing upload body.", retryable: false) }
+                let response = try store.saveUpload(sessionID: sessionID, kind: kind, fileURL: uploadURL, headerChecksum: checksum)
                 return SimpleHTTPServer.jsonResponse(status: 200, value: response)
             }
 
@@ -823,13 +704,13 @@ enum MemoirProcessorAgentMain {
         }
     }
 
-    static func authorize(request: HTTPRequest, config: AppConfig) throws {
-        guard request.headers["x-memoir-api-version"] == "1" else {
+    static func authorize(headers: [String: String], config: AppConfig) throws {
+        guard headers["x-memoir-api-version"] == "1" else {
             throw ProcessorError(code: "unsupported_api_version", message: "Unsupported API version.", retryable: false)
         }
 
         let expected = "Bearer \(config.authToken)"
-        guard request.headers["authorization"] == expected else {
+        guard headers["authorization"] == expected else {
             throw ProcessorError(code: "unauthorized", message: "Unauthorized.", retryable: false)
         }
     }

@@ -8,6 +8,12 @@ struct ServiceState {
     let isRunning: Bool
 }
 
+private final class OperatorResponse: @unchecked Sendable {
+    var data = Data()
+    var response: URLResponse?
+    var error: Error?
+}
+
 final class ServiceManager {
     private let label = "com.memoir.processor.agent"
 
@@ -168,9 +174,7 @@ final class ServiceManager {
         request.timeoutInterval = timeout
 
         let semaphore = DispatchSemaphore(value: 0)
-        var capturedData = Data()
-        var capturedResponse: URLResponse?
-        var capturedError: Error?
+        let result = OperatorResponse()
 
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.timeoutIntervalForRequest = timeout
@@ -178,29 +182,29 @@ final class ServiceManager {
         let session = URLSession(configuration: sessionConfiguration)
 
         session.dataTask(with: request) { data, response, error in
-            capturedData = data ?? Data()
-            capturedResponse = response
-            capturedError = error
+            result.data = data ?? Data()
+            result.response = response
+            result.error = error
             semaphore.signal()
         }.resume()
 
         semaphore.wait()
         session.invalidateAndCancel()
 
-        if let capturedError {
+        if let capturedError = result.error {
             throw ProcessorError(code: "service_command_failed", message: capturedError.localizedDescription, retryable: true)
         }
 
-        guard let httpResponse = capturedResponse as? HTTPURLResponse else {
+        guard let httpResponse = result.response as? HTTPURLResponse else {
             throw ProcessorError(code: "service_command_failed", message: "Operator request did not receive an HTTP response.", retryable: true)
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let body = String(data: capturedData, encoding: .utf8) ?? "Unknown error"
+            let body = String(data: result.data, encoding: .utf8) ?? "Unknown error"
             throw ProcessorError(code: "service_command_failed", message: body, retryable: true)
         }
 
-        return capturedData
+        return result.data
     }
 
     private func runLaunchctlUnchecked(arguments: [String]) -> (terminationStatus: Int32, output: String) {
@@ -220,5 +224,32 @@ final class ServiceManager {
         let data = stdout.fileHandleForReading.readDataToEndOfFile() + stderr.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
         return (process.terminationStatus, output)
+    }
+}
+
+@MainActor
+enum UpdateServiceLifecycle {
+    private static var prepared = false
+    private static func marker(_ config: AppConfig) -> URL { ProcessorPaths.root(for: config).appendingPathComponent("restart-after-update") }
+
+    static func prepareForInstall() -> Bool {
+        if prepared { return true }
+        do {
+            let config = try ConfigStore().load()
+            let manager = ServiceManager()
+            if manager.serviceState().isRunning {
+                try Data().write(to: marker(config), options: .atomic)
+                try manager.stop()
+            }
+            prepared = true
+            return true
+        } catch { return false }
+    }
+
+    static func restartAfterUpdateIfNeeded(config: AppConfig) throws {
+        let url = marker(config)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try ServiceManager().start()
+        try FileManager.default.removeItem(at: url)
     }
 }

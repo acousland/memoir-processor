@@ -37,12 +37,13 @@ public final class SessionValidator {
         guard fileManager.fileExists(atPath: systemURL.path) else {
             throw ProcessorError(code: "missing_required_file", message: "system.wav is missing.", retryable: false)
         }
-        try validateAudio(url: systemURL)
+        try validateAudio(url: systemURL, metadata: metadata.systemAudio, timing: metadata.streamSync?.streams.system)
 
         let micURL = ProcessorPaths.audioURL(for: config, sessionID: sessionID, kind: .mic)
         let resolvedMicURL: URL? = fileManager.fileExists(atPath: micURL.path) ? micURL : nil
         if let resolvedMicURL {
-            try validateAudio(url: resolvedMicURL)
+            guard let mic = metadata.micAudio else { throw ProcessorError(code: "invalid_metadata", message: "mic.wav has no matching metadata.", retryable: false) }
+            try validateAudio(url: resolvedMicURL, metadata: mic, timing: metadata.streamSync?.streams.mic)
         }
 
         if config.diarizationEnabled, resolvedMicURL != nil, metadata.streamSync == nil {
@@ -53,10 +54,22 @@ public final class SessionValidator {
             )
         }
 
+        if metadata.micAudio != nil, resolvedMicURL == nil { throw ProcessorError(code: "missing_required_file", message: "mic.wav is missing.", retryable: false) }
+        if let sync = metadata.streamSync {
+            guard sync.schemaVersion == 1, sync.timeline == "host_time_ns", UInt64(sync.sessionZeroHostTimeNS) != nil,
+                  ["system", "mic"].contains(sync.referenceStream), sync.streams.system != nil,
+                  resolvedMicURL == nil || sync.streams.mic != nil else {
+                throw ProcessorError(code: "invalid_metadata", message: "Unsupported or incomplete stream_sync metadata.", retryable: false)
+            }
+            if let mic = sync.streams.mic, let system = sync.streams.system, let offset = sync.relativeOffsetToSystemSeconds,
+               abs(mic.startOffsetSeconds - system.startOffsetSeconds - offset) > 0.001 {
+                throw ProcessorError(code: "invalid_metadata", message: "Stream offsets disagree.", retryable: false)
+            }
+        }
         return ValidationResult(metadata: metadata, systemAudioURL: systemURL, micAudioURL: resolvedMicURL, streamSync: metadata.streamSync)
     }
 
-    private func validateAudio(url: URL) throws {
+    private func validateAudio(url: URL, metadata: AudioMetadata, timing: StreamTimingMetadata?) throws {
         let audioFile: AVAudioFile
         do {
             audioFile = try AVAudioFile(forReading: url)
@@ -64,6 +77,17 @@ public final class SessionValidator {
             throw ProcessorError(code: "audio_decode_failed", message: "\(url.lastPathComponent) could not be decoded as audio.", retryable: false)
         }
 
+        let rate = audioFile.processingFormat.sampleRate
+        guard abs(rate - metadata.sampleRateHz) < 1, Int(audioFile.processingFormat.channelCount) == metadata.channels,
+              abs(Double(audioFile.length) / rate - metadata.durationSeconds) < 0.1 else {
+            throw ProcessorError(code: "invalid_metadata", message: "Audio properties disagree with metadata for \(url.lastPathComponent).", retryable: false)
+        }
+        if let timing {
+            guard timing.durationFrames == audioFile.length, abs(Double(timing.sampleRateHz) - rate) < 1,
+                  UInt64(timing.firstSampleHostTimeNS) != nil, timing.startOffsetSeconds >= 0, timing.latencyFrames >= 0 else {
+                throw ProcessorError(code: "invalid_metadata", message: "Stream timing disagrees with \(url.lastPathComponent).", retryable: false)
+            }
+        }
         guard audioFile.length > 0 else {
             throw ProcessorError(code: "empty_audio", message: "\(url.lastPathComponent) has zero duration.", retryable: false)
         }
@@ -120,11 +144,11 @@ public final class AudioSignalInspector {
         let chunkSize: AVAudioFrameCount = 4096
         var peak: Float = 0
 
-        while true {
+        while file.framePosition < file.length {
             guard let buffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: chunkSize) else {
                 throw ProcessorError(code: "audio_analysis_failed", message: "Unable to allocate audio analysis buffer.", retryable: false)
             }
-            try file.read(into: buffer)
+            try file.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(chunkSize), file.length - file.framePosition)))
             let frameLength = Int(buffer.frameLength)
             if frameLength == 0 { break }
 

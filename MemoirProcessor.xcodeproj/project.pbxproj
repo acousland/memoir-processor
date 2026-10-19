@@ -7,23 +7,29 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03DD6358505E6860FCFCF18E /* SubprocessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE9D0C386BCA229C2CAF506F /* SubprocessRunner.swift */; };
 		08F67E43BDE437543DFF0574 /* Processing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F83F90CEFBD2CAA2FF1AA2 /* Processing.swift */; };
 		11E8D126339C2EA431C9C97B /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 36982377544C3C26CB09AE38 /* WhisperKit */; };
 		1DFC62DBF6DD78CC2C69558D /* MemoirProcessorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 075CCBA7F639E676155CEC08 /* MemoirProcessorApp.swift */; };
 		26882B3479CA8E037427C80D /* WhisperKitTranscriptionWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32948AD5BA779C18517DFFB6 /* WhisperKitTranscriptionWorker.swift */; };
 		56F6371CDFCED912C6A1D99B /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
+		57A9C902B5D515DDCA738F08 /* ReliabilityRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6700E21D769E052DBFE09DB /* ReliabilityRegressionTests.swift */; };
+		5C131FDD8C2031A20ACAB432 /* HTTPRequestDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBF5A1B317CA827E83804B52 /* HTTPRequestDecoder.swift */; };
 		5E586D3B164499923626A635 /* SQLiteDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60EB982B3B8B2770BDCA309B /* SQLiteDatabase.swift */; };
+		6EA29E38CBF65ADB2C23278F /* HTTPRequestDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF43A9870B4966F28E5FF783 /* HTTPRequestDecoderTests.swift */; };
+		701DB9C341FCA50244239408 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C96AF1505F44FD57EC4B527E /* Sparkle */; };
 		74E0F7039670A56D4C98E525 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB2287ADF98F56D105790C38 /* SessionStore.swift */; };
 		920908BDA24EC5C7D88146F2 /* AgentMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BB7C89A2E38B89B38B3DB8C /* AgentMain.swift */; };
 		9BDD2E9DFE1814B2A3EA59D9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38C2A3105813A1242B784F0 /* ContentView.swift */; };
 		A64EB01BCCA007C9BCBCCFCA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 379A22F251C8ECCD3FFA57BF /* Models.swift */; };
+		A76E735F4D6F0FF6ACF09627 /* SecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FE68BBFFD9D01813ABBB12 /* SecretStore.swift */; };
+		AE5010958825D3A0ECAC29F9 /* AppUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = C49F0DCE6F1964C17EB22C67 /* AppUpdater.swift */; };
 		BB4F538234D6B78F1E411ADA /* AudioIntelligence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48D97D12604B903289CC87B6 /* AudioIntelligence.swift */; };
 		C43403EDFD6DF9021598D2EA /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
 		C80C47C9C0A92535B3A8F177 /* Support.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26B23426C76A88CE9D313CAC /* Support.swift */; };
 		CFCF1300140835026B24B617 /* libMemoirProcessorCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */; };
 		DD29FA30DF8019B8566FB773 /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DF1B5C2F34A3FAE076E8596 /* ServiceManager.swift */; };
 		E69FA1A160D31EE1BE849B0B /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10A96572482D70FF0F2E56D /* AppViewModel.swift */; };
-		F27FF12575737DE2D68CB067 /* MemoirProcessorAgent in Resources */ = {isa = PBXBuildFile; fileRef = 56C3779560468DB9484D3527 /* MemoirProcessorAgent */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FCD536653E0FECB484970F1A /* MemoirProcessorCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 438938AB90F067303FA54636 /* MemoirProcessorCoreTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -74,9 +80,15 @@
 		922159A60FCC9E30D1649960 /* libMemoirProcessorCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libMemoirProcessorCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A38C2A3105813A1242B784F0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AF0579FC48F68E49C5515E7D /* MemoirProcessorApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MemoirProcessorApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B6700E21D769E052DBFE09DB /* ReliabilityRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReliabilityRegressionTests.swift; sourceTree = "<group>"; };
 		C10A96572482D70FF0F2E56D /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		C49F0DCE6F1964C17EB22C67 /* AppUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdater.swift; sourceTree = "<group>"; };
+		CE9D0C386BCA229C2CAF506F /* SubprocessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubprocessRunner.swift; sourceTree = "<group>"; };
+		D4FE68BBFFD9D01813ABBB12 /* SecretStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretStore.swift; sourceTree = "<group>"; };
 		D96492B8E91BCC9AE6275F39 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DB2287ADF98F56D105790C38 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
+		DBF5A1B317CA827E83804B52 /* HTTPRequestDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPRequestDecoder.swift; sourceTree = "<group>"; };
+		DF43A9870B4966F28E5FF783 /* HTTPRequestDecoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPRequestDecoderTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +105,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				56F6371CDFCED912C6A1D99B /* libMemoirProcessorCore.a in Frameworks */,
+				701DB9C341FCA50244239408 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,7 +147,9 @@
 		71937BB7C707439A8A59F242 /* MemoirProcessorCoreTests */ = {
 			isa = PBXGroup;
 			children = (
+				DF43A9870B4966F28E5FF783 /* HTTPRequestDecoderTests.swift */,
 				438938AB90F067303FA54636 /* MemoirProcessorCoreTests.swift */,
+				B6700E21D769E052DBFE09DB /* ReliabilityRegressionTests.swift */,
 			);
 			name = MemoirProcessorCoreTests;
 			path = Tests/MemoirProcessorCoreTests;
@@ -143,6 +158,7 @@
 		C676AEE8DF8B596C16B08176 /* MemoirProcessorApp */ = {
 			isa = PBXGroup;
 			children = (
+				C49F0DCE6F1964C17EB22C67 /* AppUpdater.swift */,
 				C10A96572482D70FF0F2E56D /* AppViewModel.swift */,
 				A38C2A3105813A1242B784F0 /* ContentView.swift */,
 				1DF1B5C2F34A3FAE076E8596 /* ServiceManager.swift */,
@@ -155,10 +171,13 @@
 			isa = PBXGroup;
 			children = (
 				48D97D12604B903289CC87B6 /* AudioIntelligence.swift */,
+				DBF5A1B317CA827E83804B52 /* HTTPRequestDecoder.swift */,
 				379A22F251C8ECCD3FFA57BF /* Models.swift */,
 				80F83F90CEFBD2CAA2FF1AA2 /* Processing.swift */,
+				D4FE68BBFFD9D01813ABBB12 /* SecretStore.swift */,
 				DB2287ADF98F56D105790C38 /* SessionStore.swift */,
 				60EB982B3B8B2770BDCA309B /* SQLiteDatabase.swift */,
+				CE9D0C386BCA229C2CAF506F /* SubprocessRunner.swift */,
 				26B23426C76A88CE9D313CAC /* Support.swift */,
 			);
 			name = MemoirProcessorCore;
@@ -211,7 +230,6 @@
 			buildConfigurationList = 9CFF6B2E28FE0AD5EE3F8C7B /* Build configuration list for PBXNativeTarget "MemoirProcessorApp" */;
 			buildPhases = (
 				84B5D30B1607E18B0952CC42 /* Sources */,
-				B6DFAEFF453B9FAD8CE031BD /* Resources */,
 				3229FE64874B8BFB9C6152B7 /* Frameworks */,
 				1DD080F19B7FADB0D5980CC3 /* Bundle Agent */,
 			);
@@ -223,6 +241,7 @@
 			);
 			name = MemoirProcessorApp;
 			packageProductDependencies = (
+				C96AF1505F44FD57EC4B527E /* Sparkle */,
 			);
 			productName = MemoirProcessorApp;
 			productReference = AF0579FC48F68E49C5515E7D /* MemoirProcessorApp.app */;
@@ -287,6 +306,7 @@
 			mainGroup = 2E06E175A96E2CB8095A6976;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				316FF41C25440BCCF05ED3AE /* XCRemoteSwiftPackageReference "Sparkle" */,
 				8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -301,17 +321,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXResourcesBuildPhase section */
-		B6DFAEFF453B9FAD8CE031BD /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				F27FF12575737DE2D68CB067 /* MemoirProcessorAgent in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		1DD080F19B7FADB0D5980CC3 /* Bundle Agent */ = {
@@ -355,7 +364,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6EA29E38CBF65ADB2C23278F /* HTTPRequestDecoderTests.swift in Sources */,
 				FCD536653E0FECB484970F1A /* MemoirProcessorCoreTests.swift in Sources */,
+				57A9C902B5D515DDCA738F08 /* ReliabilityRegressionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -372,6 +383,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AE5010958825D3A0ECAC29F9 /* AppUpdater.swift in Sources */,
 				E69FA1A160D31EE1BE849B0B /* AppViewModel.swift in Sources */,
 				9BDD2E9DFE1814B2A3EA59D9 /* ContentView.swift in Sources */,
 				1DFC62DBF6DD78CC2C69558D /* MemoirProcessorApp.swift in Sources */,
@@ -384,10 +396,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				BB4F538234D6B78F1E411ADA /* AudioIntelligence.swift in Sources */,
+				5C131FDD8C2031A20ACAB432 /* HTTPRequestDecoder.swift in Sources */,
 				A64EB01BCCA007C9BCBCCFCA /* Models.swift in Sources */,
 				08F67E43BDE437543DFF0574 /* Processing.swift in Sources */,
 				5E586D3B164499923626A635 /* SQLiteDatabase.swift in Sources */,
+				A76E735F4D6F0FF6ACF09627 /* SecretStore.swift in Sources */,
 				74E0F7039670A56D4C98E525 /* SessionStore.swift in Sources */,
+				03DD6358505E6860FCFCF18E /* SubprocessRunner.swift in Sources */,
 				C80C47C9C0A92535B3A8F177 /* Support.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -661,12 +676,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2026101901;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -683,12 +697,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 2026101901;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 1.1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -750,12 +763,20 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		316FF41C25440BCCF05ED3AE /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.6;
+			};
+		};
 		8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/argmaxinc/WhisperKit.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.18.0;
+				kind = exactVersion;
+				version = 0.18.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -765,6 +786,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8E68E6723A9DDF3CC8AB1A9D /* XCRemoteSwiftPackageReference "WhisperKit" */;
 			productName = WhisperKit;
+		};
+		C96AF1505F44FD57EC4B527E /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 316FF41C25440BCCF05ED3AE /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
